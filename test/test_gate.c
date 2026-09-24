@@ -134,10 +134,38 @@ static void mutated_survivor_is_rejected(void)
     ASSERT_TRUE(!utility_select(survivors, &task, &utility, &selected));
 }
 
+static void missing_predicate_channels_fail_conservatively(void)
+{
+    Ledger ledger;
+    LedgerConfig setup = ledger_config();
+    Task task = { .task_id = 4, .primary_subsystem = SUBSYSTEM_PAYLOAD };
+    TelemetryFrame telemetry;
+    GateContext context = {0};
+    Candidate candidate = { .task_id = 4, .mode = MODE_FULL };
+    ASSERT_TRUE(ledger_init(&ledger, &setup));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 800, 0, 0));
+    telemetry_frame_init(&telemetry);
+    telemetry.battery_soc_mV_pct.value = 800;
+    telemetry.temp_mC[SUBSYSTEM_PAYLOAD].value = 20000;
+    context.telemetry = &telemetry;
+    context.ledger = &ledger;
+    context.remaining_thermal_margin_mC[SUBSYSTEM_PAYLOAD] = 1000;
+    context.absolute_deadline_ns = 10;
+    ASSERT_TRUE(gate_evaluate(&candidate, &task, &context).passed);
+    telemetry.battery_soc_mV_pct.quality = TELEMETRY_QUALITY_MISSING;
+    ASSERT_EQ_INT(GATE_SOC_FLOOR,
+                  gate_evaluate(&candidate, &task, &context).failed_predicate);
+    telemetry.battery_soc_mV_pct.quality = TELEMETRY_QUALITY_OK;
+    telemetry.temp_mC[SUBSYSTEM_PAYLOAD].quality = TELEMETRY_QUALITY_MISSING;
+    ASSERT_EQ_INT(GATE_THERMAL_CEILING,
+                  gate_evaluate(&candidate, &task, &context).failed_predicate);
+}
+
 int main(void)
 {
     RUN_TEST(rejects_each_specific_predicate);
     RUN_TEST(only_gate_survivors_reach_the_set);
     RUN_TEST(mutated_survivor_is_rejected);
+    RUN_TEST(missing_predicate_channels_fail_conservatively);
     return test_failures != 0;
 }

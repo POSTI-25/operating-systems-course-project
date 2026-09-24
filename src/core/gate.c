@@ -55,7 +55,9 @@ GateEvaluation gate_evaluate(const Candidate *candidate, const Task *task,
         !ledger_energy_config(context->ledger, &physical_capacity, &floor))
         return failed(GATE_INVALID_INPUT);
     threshold = (uint32_t)floor + (uint32_t)context->safety_margin_permille;
-    if (threshold > 1000 || context->telemetry->battery_soc_mV_pct.value < 0 ||
+    if (threshold > 1000 ||
+        context->telemetry->battery_soc_mV_pct.quality != TELEMETRY_QUALITY_OK ||
+        context->telemetry->battery_soc_mV_pct.value < 0 ||
         context->telemetry->battery_soc_mV_pct.value > 1000 ||
         (uint64_t)context->telemetry->battery_soc_mV_pct.value < threshold)
         return failed(GATE_SOC_FLOOR);
@@ -64,7 +66,9 @@ GateEvaluation gate_evaluate(const Candidate *candidate, const Task *task,
         ((physical_capacity % 1000U) * delta) / 1000U;
     if (candidate->predicted_cost.energy_cost_mJ > available_mJ)
         return failed(GATE_SOC_FLOOR);
-    if ((int64_t)candidate->predicted_cost.thermal_effect_mC >
+    if (context->telemetry->temp_mC[task->primary_subsystem].quality !=
+        TELEMETRY_QUALITY_OK ||
+        (int64_t)candidate->predicted_cost.thermal_effect_mC >
         context->remaining_thermal_margin_mC[task->primary_subsystem])
         return failed(GATE_THERMAL_CEILING);
     demand = candidate->predicted_cost.resource_demand;

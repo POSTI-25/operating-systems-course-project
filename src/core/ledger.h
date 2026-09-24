@@ -54,6 +54,9 @@ typedef struct {
 
 bool ledger_init(Ledger *ledger, const LedgerConfig *config);
 bool ledger_set_rate_capacities(Ledger *ledger, uint16_t cpu_pct, uint16_t comm_pct);
+bool ledger_set_telemetry_capacities(Ledger *ledger, uint16_t cpu_pct,
+                                     uint64_t mem_KB, uint64_t storage_KB,
+                                     uint32_t sensor_mask, uint16_t comm_pct);
 bool ledger_set_self_cost(Ledger *ledger, uint16_t cpu_pct,
                           uint64_t energy_mJ);
 bool ledger_update_energy(Ledger *ledger, uint16_t soc_permille,
@@ -68,5 +71,7 @@ bool ledger_commit(Ledger *ledger, uint32_t task_id, uint8_t criticality_class,
                    ResourceDemand demand, uint64_t energy_cost_mJ);
 bool ledger_release_rate(Ledger *ledger, uint32_t task_id);
 bool ledger_release_stock(Ledger *ledger, uint32_t task_id);
+bool ledger_cancel_tentative(Ledger *ledger, uint32_t task_id);
+bool ledger_has_reservation(const Ledger *ledger, uint32_t task_id);
 
 #endif

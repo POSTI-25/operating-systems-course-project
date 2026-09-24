@@ -48,6 +48,20 @@ bool ledger_set_rate_capacities(Ledger *ledger, uint16_t cpu_pct, uint16_t comm_
     return true;
 }
 
+bool ledger_set_telemetry_capacities(Ledger *ledger, uint16_t cpu_pct,
+                                     uint64_t mem_KB, uint64_t storage_KB,
+                                     uint32_t sensor_mask, uint16_t comm_pct)
+{
+    if (ledger == NULL || cpu_pct > 100 || comm_pct > 100 ||
+        mem_KB > INT64_MAX || storage_KB > INT64_MAX) return false;
+    ledger->config.capacity[LEDGER_CPU] = (int64_t)cpu_pct;
+    ledger->config.capacity[LEDGER_MEMORY] = (int64_t)mem_KB;
+    ledger->config.capacity[LEDGER_STORAGE] = (int64_t)storage_KB;
+    ledger->config.capacity[LEDGER_SENSOR] = (int64_t)sensor_mask;
+    ledger->config.capacity[LEDGER_COMM] = (int64_t)comm_pct;
+    return true;
+}
+
 bool ledger_set_self_cost(Ledger *ledger, uint16_t cpu_pct,
                           uint64_t energy_mJ)
 {
@@ -239,4 +253,26 @@ bool ledger_release_stock(Ledger *ledger, uint32_t task_id)
     entry->stock_held = false;
     if (!entry->rate_active && !entry->energy_pending) entry->in_use = false;
     return true;
+}
+
+bool ledger_cancel_tentative(Ledger *ledger, uint32_t task_id)
+{
+    LedgerReservation *entry = find_reservation(ledger, task_id);
+    if (entry == NULL) return false;
+    if (entry->stock_held) {
+        ledger->memory_committed -= (int64_t)entry->demand.mem_KB;
+        ledger->storage_committed -= (int64_t)entry->demand.storage_KB;
+    }
+    *entry = (LedgerReservation){0};
+    return true;
+}
+
+bool ledger_has_reservation(const Ledger *ledger, uint32_t task_id)
+{
+    size_t i;
+    if (ledger == NULL) return false;
+    for (i = 0; i < SAGE_MAX_TASKS; ++i)
+        if (ledger->reservations[i].in_use &&
+            ledger->reservations[i].task_id == task_id) return true;
+    return false;
 }

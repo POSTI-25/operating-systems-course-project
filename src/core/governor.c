@@ -102,6 +102,8 @@ bool governor_observe_at(Governor *governor, const TelemetryFrame *frame,
     governor->pending_prediction_cpu_ns += added;
     governor->latest = *frame;
     governor->has_frame = true;
+    if (governor->observation_epoch == UINT64_MAX) return false;
+    ++governor->observation_epoch;
     return true;
 }
 
@@ -117,7 +119,7 @@ static bool predicted_for_task(const Governor *governor, const Task *task,
 
 static bool select_task(Governor *governor, GovernorPlan *shadow,
                         PredictionTracker *tracker, size_t index,
-                        uint64_t now_ns)
+                        uint64_t now_ns, bool permit_commit)
 {
     const Task *task = &governor->scenario->tasks.items[index];
     TelemetryFrame forecast;
@@ -168,13 +170,23 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
     if (!ledger_query(&shadow->ledger, LEDGER_COMM, &dimension)) return false;
     utility.free_comm_pct = dimension.free;
     if (!utility_select(survivors, task, &utility, &selected)) return false;
-    if (selected.outcome == SELECTION_EXECUTING) {
+    if (selected.outcome == SELECTION_EMERGENCY_SAFE_MODE_REQUESTED) {
+        shadow->emergency_safe_mode = true;
+        shadow->emergency_task_id = task->task_id;
+    } else if (selected.outcome == SELECTION_EXECUTING && permit_commit) {
         Commitment *entry;
-        if (shadow->commitment_count >= SAGE_MAX_TASKS ||
+        size_t slot;
+        for (slot = 0; slot < shadow->commitment_count; ++slot)
+            if (shadow->commitments[slot].task_id == task->task_id) break;
+        if (ledger_has_reservation(&shadow->ledger, task->task_id))
+            return true;
+        if ((slot == shadow->commitment_count &&
+             shadow->commitment_count >= SAGE_MAX_TASKS) ||
             !ledger_commit(&shadow->ledger, task->task_id, task->criticality_class,
                 selected.selected.predicted_cost.resource_demand,
                 selected.selected.predicted_cost.energy_cost_mJ)) return false;
-        entry = &shadow->commitments[shadow->commitment_count++];
+        entry = &shadow->commitments[slot];
+        if (slot == shadow->commitment_count) ++shadow->commitment_count;
         entry->task_id = task->task_id;
         entry->mode = selected.selected.mode;
         entry->assumption_snapshot.soc_permille = forecast.battery_soc_mV_pct.value;
@@ -183,9 +195,136 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
         entry->assumption_snapshot.current_draw_mA = forecast.current_draw_mA.value;
         entry->assumption_snapshot.forecast_horizon_end_ns = horizon_end;
         entry->commit_time_ns = now_ns;
+        shadow->revalidation[index].observed_baseline.soc_permille =
+            governor->latest.battery_soc_mV_pct.value;
+        for (i = 0; i < N_SUBSYSTEMS; ++i)
+            shadow->revalidation[index].observed_baseline.temp_mC[i] =
+                governor->latest.temp_mC[i].value;
+        shadow->revalidation[index].observed_baseline.current_draw_mA =
+            governor->latest.current_draw_mA.value;
+        shadow->revalidation[index].has_observed_baseline = true;
+        shadow->commitment_active[index] = true;
         shadow->pending[index] = false;
-    } else if (selected.outcome == SELECTION_REJECTED) {
+    } else if (selected.outcome == SELECTION_REJECTED && permit_commit) {
         shadow->pending[index] = false;
+    }
+    return true;
+}
+
+static bool capacity_violation(const Governor *governor,
+                               const GovernorPlan *plan,
+                               bool violated[LEDGER_DIMENSION_COUNT])
+{
+    uint64_t total[LEDGER_DIMENSION_COUNT] = {0};
+    uint64_t ordinary[LEDGER_DIMENSION_COUNT] = {0};
+    size_t i;
+    int id;
+    total[LEDGER_CPU] = (uint64_t)plan->ledger.self_cpu_pct;
+    total[LEDGER_ENERGY] = (uint64_t)plan->ledger.self_energy_mJ;
+    ordinary[LEDGER_CPU] = total[LEDGER_CPU];
+    ordinary[LEDGER_ENERGY] = total[LEDGER_ENERGY];
+    for (i = 0; i < governor->scenario->tasks.count; ++i) {
+        const Task *task = &governor->scenario->tasks.items[i];
+        const TaskModeProfile *mode;
+        size_t slot;
+        uint64_t demand[LEDGER_DIMENSION_COUNT];
+        if (!plan->commitment_active[i]) continue;
+        for (slot = 0; slot < plan->commitment_count; ++slot)
+            if (plan->commitments[slot].task_id == task->task_id) break;
+        if (slot == plan->commitment_count) return false;
+        mode = &task->modes[plan->commitments[slot].mode];
+        demand[LEDGER_CPU] = mode->resource_demand.cpu_pct;
+        demand[LEDGER_ENERGY] = mode->energy_cost_mJ;
+        demand[LEDGER_MEMORY] = mode->resource_demand.mem_KB;
+        demand[LEDGER_STORAGE] = mode->resource_demand.storage_KB;
+        demand[LEDGER_SENSOR] = mode->resource_demand.sensor_mask;
+        demand[LEDGER_COMM] = mode->resource_demand.comm_pct;
+        for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) {
+            if (id == LEDGER_SENSOR) {
+                total[id] |= demand[id];
+                if (task->criticality_class != 0) ordinary[id] |= demand[id];
+            } else {
+                if (demand[id] > UINT64_MAX - total[id]) return false;
+                total[id] += demand[id];
+                if (task->criticality_class != 0) {
+                    if (demand[id] > UINT64_MAX - ordinary[id]) return false;
+                    ordinary[id] += demand[id];
+                }
+            }
+        }
+    }
+    for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) {
+        int64_t cap = plan->ledger.config.capacity[id];
+        int64_t reserve = plan->ledger.config.protected_reserve[id];
+        if (id == LEDGER_SENSOR)
+            violated[id] = ((uint32_t)total[id] & ~(uint32_t)cap) != 0U ||
+                ((uint32_t)ordinary[id] &
+                 ((uint32_t)reserve | ~(uint32_t)cap)) != 0U;
+        else
+            violated[id] = cap < 0 || reserve < 0 ||
+                total[id] > (uint64_t)cap ||
+                ordinary[id] > (uint64_t)(cap > reserve ? cap - reserve : 0);
+    }
+    return true;
+}
+
+static bool task_contributes(const TaskModeProfile *mode,
+                             const bool violated[LEDGER_DIMENSION_COUNT])
+{
+    return (violated[LEDGER_CPU] && mode->resource_demand.cpu_pct != 0) ||
+        (violated[LEDGER_ENERGY] && mode->energy_cost_mJ != 0) ||
+        (violated[LEDGER_MEMORY] && mode->resource_demand.mem_KB != 0) ||
+        (violated[LEDGER_STORAGE] && mode->resource_demand.storage_KB != 0) ||
+        (violated[LEDGER_SENSOR] && mode->resource_demand.sensor_mask != 0) ||
+        (violated[LEDGER_COMM] && mode->resource_demand.comm_pct != 0);
+}
+
+static bool trim_overcommitted(Governor *governor, GovernorPlan *plan,
+                               uint64_t now_ns)
+{
+    size_t attempts;
+    for (attempts = 0; attempts < governor->scenario->tasks.count; ++attempts) {
+        bool violated[LEDGER_DIMENSION_COUNT] = {0};
+        bool any = false;
+        size_t victim = governor->scenario->tasks.count;
+        size_t victim_slot = 0;
+        size_t i;
+        int id;
+        if (!capacity_violation(governor, plan, violated)) return false;
+        for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) any |= violated[id];
+        if (!any) return true;
+        for (i = 0; i < governor->scenario->tasks.count; ++i) {
+            const Task *task = &governor->scenario->tasks.items[i];
+            size_t slot;
+            if (!plan->commitment_active[i]) continue;
+            for (slot = 0; slot < plan->commitment_count; ++slot)
+                if (plan->commitments[slot].task_id == task->task_id) break;
+            if (slot == plan->commitment_count ||
+                !task_contributes(&task->modes[plan->commitments[slot].mode],
+                                  violated)) continue;
+            if (victim == governor->scenario->tasks.count ||
+                task->criticality_class >
+                    governor->scenario->tasks.items[victim].criticality_class ||
+                (task->criticality_class ==
+                    governor->scenario->tasks.items[victim].criticality_class &&
+                 (plan->commitments[slot].commit_time_ns >
+                    plan->commitments[victim_slot].commit_time_ns ||
+                  (plan->commitments[slot].commit_time_ns ==
+                    plan->commitments[victim_slot].commit_time_ns &&
+                   slot > victim_slot)))) {
+                victim = i;
+                victim_slot = slot;
+            }
+        }
+        if (victim == governor->scenario->tasks.count) return true;
+        if (!revalidation_force_capacity_invalidation(&plan->revalidation[victim],
+                &governor->scenario->tasks.items[victim],
+                plan->commitments[victim_slot].mode, now_ns) ||
+            !ledger_release_rate(&plan->ledger,
+                governor->scenario->tasks.items[victim].task_id)) return false;
+        (void)ledger_release_stock(&plan->ledger,
+            governor->scenario->tasks.items[victim].task_id);
+        plan->commitment_active[victim] = false;
     }
     return true;
 }
@@ -193,7 +332,18 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
 GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
                                     bool fault_escalation)
 {
+    uint32_t mask = 0;
+    if (fault_escalation && governor != NULL)
+        mask = (uint32_t)governor->latest.fault_flags.value;
+    return governor_cycle_with_fault_mask(governor, now_ns, mask);
+}
+
+GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
+                                                    uint64_t now_ns,
+                                                    uint32_t fault_set_mask)
+{
     GovernorPlan shadow;
+    GovernorPlan before;
     PredictionTracker shadow_tracker;
     size_t i;
     size_t order[SAGE_MAX_TASKS];
@@ -202,7 +352,7 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
     uint64_t end_cpu;
     uint16_t budget_soc;
     uint64_t prediction_cpu;
-    (void)fault_escalation;
+    size_t initial_commitment_count;
     if (governor == NULL || !governor->has_frame) return GOVERNOR_CYCLE_ERROR;
     if (!process_cpu_time_ns(&start_cpu)) return GOVERNOR_CYCLE_ERROR;
     prediction_cpu = governor->pending_prediction_cpu_ns;
@@ -210,10 +360,27 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
     governor->last_prediction_wall_ns = governor->pending_prediction_wall_ns;
     governor->pending_prediction_wall_ns = 0;
     shadow = governor->plan;
+    before = governor->plan;
+    initial_commitment_count = shadow.commitment_count;
     shadow_tracker = governor->accuracy_tracker;
-    if (!ledger_set_rate_capacities(&shadow.ledger,
-            (uint16_t)governor->latest.cpu_avail_pct.value,
-            governor->latest.comm_window_open.value != 0 ? 100U : 0U))
+    shadow.emergency_safe_mode = false;
+    if (!ledger_set_telemetry_capacities(&shadow.ledger,
+            governor->latest.cpu_avail_pct.quality == TELEMETRY_QUALITY_OK &&
+                governor->latest.cpu_avail_pct.value >= 0 &&
+                governor->latest.cpu_avail_pct.value <= 100 ?
+                (uint16_t)governor->latest.cpu_avail_pct.value : 0U,
+            governor->latest.mem_avail_KB.quality == TELEMETRY_QUALITY_OK &&
+                governor->latest.mem_avail_KB.value > 0 ?
+                (uint64_t)governor->latest.mem_avail_KB.value : 0U,
+            governor->latest.storage_avail_KB.quality == TELEMETRY_QUALITY_OK &&
+                governor->latest.storage_avail_KB.value > 0 ?
+                (uint64_t)governor->latest.storage_avail_KB.value : 0U,
+            governor->latest.sensor_avail_mask.quality == TELEMETRY_QUALITY_OK &&
+                governor->latest.sensor_avail_mask.value >= 0 &&
+                governor->latest.sensor_avail_mask.value <= UINT32_MAX ?
+                (uint32_t)governor->latest.sensor_avail_mask.value : 0U,
+            governor->latest.comm_window_open.quality == TELEMETRY_QUALITY_OK &&
+                governor->latest.comm_window_open.value != 0 ? 100U : 0U))
         return GOVERNOR_CYCLE_ERROR;
     if (governor->latest.battery_soc_mV_pct.value < 0 ||
         governor->latest.battery_soc_mV_pct.value > 1000)
@@ -235,7 +402,18 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
                 budget_soc = (uint16_t)forecast.battery_soc_mV_pct.value;
         }
     }
-    if (!ledger_update_energy(&shadow.ledger, budget_soc, 0, 0))
+    if (governor->latest.battery_soc_mV_pct.quality == TELEMETRY_QUALITY_OK &&
+        (!shadow.has_energy_soc_timestamp ||
+         governor->latest.battery_soc_mV_pct.timestamp_ns >
+             shadow.last_energy_soc_timestamp_ns)) {
+        if (!ledger_update_energy(&shadow.ledger, budget_soc, 0, 0))
+            return GOVERNOR_CYCLE_ERROR;
+        shadow.energy_refresh_epoch = governor->observation_epoch;
+        shadow.last_energy_soc_timestamp_ns =
+            governor->latest.battery_soc_mV_pct.timestamp_ns;
+        shadow.has_energy_soc_timestamp = true;
+    }
+    if (!trim_overcommitted(governor, &shadow, now_ns))
         return GOVERNOR_CYCLE_ERROR;
     for (i = 0; i < governor->scenario->tasks.count; ++i) {
         size_t at = i;
@@ -252,9 +430,11 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
         size_t index = order[i];
         if (shadow.pending[index]) {
             uint64_t injected;
-            if (!select_task(governor, &shadow, &shadow_tracker, index, now_ns) ||
+            if (!select_task(governor, &shadow, &shadow_tracker, index,
+                             now_ns, true) ||
                 !process_cpu_time_ns(&end_cpu) || end_cpu < start_cpu)
                 return GOVERNOR_CYCLE_ERROR;
+            if (shadow.emergency_safe_mode) break;
             ++processed;
             if (prediction_cpu > UINT64_MAX - (end_cpu - start_cpu))
                 return GOVERNOR_CYCLE_OVERRUN;
@@ -267,6 +447,86 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
                 governor->config.self_cost_cap_ns)
                 return GOVERNOR_CYCLE_OVERRUN;
         }
+    }
+    for (i = 0; i < governor->scenario->tasks.count; ++i) {
+        RevalidationInput check = {0};
+        RevalidationEvent event;
+        TelemetryFrame forecast;
+        uint64_t horizon_end;
+        size_t slot;
+        int subsystem;
+        const Task *task = &governor->scenario->tasks.items[i];
+        if (shadow.pending[i] ||
+            (!shadow.commitment_active[i] && !shadow.revalidation[i].invalid))
+            continue;
+        for (slot = 0; slot < shadow.commitment_count; ++slot)
+            if (shadow.commitments[slot].task_id == task->task_id) break;
+        if (slot == shadow.commitment_count ||
+            !predicted_for_task(governor, task, now_ns, &forecast,
+                                &horizon_end)) return GOVERNOR_CYCLE_ERROR;
+        check.task = task;
+        check.mode = shadow.commitments[slot].mode;
+        check.assumption_snapshot = &shadow.commitments[slot].assumption_snapshot;
+        check.actual = &governor->latest;
+        check.forecast = &forecast;
+        check.ledger = &shadow.ledger;
+        check.safety_margin_permille = governor->config.safety_margin_permille;
+        check.now_ns = now_ns;
+        check.forecast_horizon_end_ns = horizon_end;
+        check.step_ns = governor->scenario->step_ns;
+        check.observation_epoch = governor->observation_epoch;
+        check.fault_set_mask = fault_set_mask;
+        check.is_out_of_band = fault_set_mask != 0U;
+        for (subsystem = 0; subsystem < N_SUBSYSTEMS; ++subsystem)
+            check.thermal_limit_mC[subsystem] =
+                governor->config.thermal_limit_mC[subsystem];
+        event = revalidation_step(&shadow.revalidation[i], &check);
+        if (event == REVALIDATION_ERROR) return GOVERNOR_CYCLE_ERROR;
+        if (event == REVALIDATION_INVALIDATE) {
+            if (!ledger_release_rate(&shadow.ledger, task->task_id))
+                return GOVERNOR_CYCLE_ERROR;
+            (void)ledger_release_stock(&shadow.ledger, task->task_id);
+            shadow.commitment_active[i] = false;
+            if (!select_task(governor, &shadow, &shadow_tracker, i,
+                             now_ns, false)) return GOVERNOR_CYCLE_ERROR;
+        } else if (event == REVALIDATION_RESTORE_READY) {
+            if (!select_task(governor, &shadow, &shadow_tracker, i,
+                             now_ns, true)) return GOVERNOR_CYCLE_ERROR;
+            if (shadow.commitment_active[i] &&
+                !revalidation_complete_restore(&shadow.revalidation[i],
+                    now_ns, governor->scenario->step_ns))
+                return GOVERNOR_CYCLE_ERROR;
+        }
+    }
+    for (i = 0; i < governor->scenario->tasks.count; ++i) {
+        const Task *task = &governor->scenario->tasks.items[i];
+        if (task->criticality_class == 0 && shadow.revalidation[i].invalid &&
+            !shadow.commitment_active[i]) {
+            shadow.emergency_safe_mode = true;
+            shadow.emergency_task_id = task->task_id;
+            break;
+        }
+    }
+    if (shadow.emergency_safe_mode) {
+        size_t slot;
+        for (i = 0; i < governor->scenario->tasks.count; ++i) {
+            uint32_t task_id = governor->scenario->tasks.items[i].task_id;
+            if (!shadow.commitment_active[i] || before.commitment_active[i])
+                continue;
+            if (!ledger_cancel_tentative(&shadow.ledger, task_id))
+                return GOVERNOR_CYCLE_ERROR;
+            shadow.pending[i] = before.pending[i];
+            shadow.commitment_active[i] = false;
+            shadow.revalidation[i] = before.revalidation[i];
+            for (slot = 0; slot < shadow.commitment_count; ++slot)
+                if (shadow.commitments[slot].task_id == task_id) {
+                    if (slot < initial_commitment_count)
+                        shadow.commitments[slot] = before.commitments[slot];
+                    else shadow.commitments[slot] = (Commitment){0};
+                    break;
+                }
+        }
+        shadow.commitment_count = initial_commitment_count;
     }
     if (!process_cpu_time_ns(&end_cpu) || end_cpu < start_cpu)
         return GOVERNOR_CYCLE_ERROR;
@@ -283,6 +543,26 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
 size_t governor_commitment_count(const Governor *governor)
 {
     return governor == NULL ? 0 : governor->plan.commitment_count;
+}
+
+bool governor_commitment_active(const Governor *governor, size_t task_index)
+{
+    return governor != NULL && governor->scenario != NULL &&
+        task_index < governor->scenario->tasks.count &&
+        governor->plan.commitment_active[task_index];
+}
+
+const RevalidationState *governor_revalidation_state_at(const Governor *governor,
+                                                        size_t task_index)
+{
+    return governor == NULL || governor->scenario == NULL ||
+        task_index >= governor->scenario->tasks.count ? NULL :
+        &governor->plan.revalidation[task_index];
+}
+
+bool governor_emergency_safe_mode(const Governor *governor)
+{
+    return governor != NULL && governor->plan.emergency_safe_mode;
 }
 
 const Commitment *governor_commitment_at(const Governor *governor, size_t index)
@@ -445,7 +725,8 @@ bool governor_run_pipe_logged(Governor *governor, SimulatorPipe *stream,
                 next_tick += governor->scenario->step_ns;
             }
         } else if (message.type == PLATFORM_IPC_FAULT_ESCALATION) {
-            if (governor_cycle(governor, message.sim_time_ns, true) ==
+            if (governor_cycle_with_fault_mask(governor,
+                    message.sim_time_ns, message.fault_set_mask) ==
                 GOVERNOR_CYCLE_ERROR) return false;
             ++stats->fault_cycles;
         } else return false;

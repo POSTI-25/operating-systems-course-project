@@ -3,6 +3,7 @@
 
 #include "gate.h"
 #include "prediction.h"
+#include "revalidation.h"
 #include "utility.h"
 #include "sim/scenario.h"
 #include "platform/platform_ipc.h"
@@ -34,6 +35,13 @@ typedef struct {
     Ledger ledger;
     Commitment commitments[SAGE_MAX_TASKS];
     bool pending[SAGE_MAX_TASKS];
+    bool commitment_active[SAGE_MAX_TASKS];
+    RevalidationState revalidation[SAGE_MAX_TASKS];
+    bool emergency_safe_mode;
+    uint32_t emergency_task_id;
+    uint64_t energy_refresh_epoch;
+    uint64_t last_energy_soc_timestamp_ns;
+    bool has_energy_soc_timestamp;
     size_t commitment_count;
 } GovernorPlan;
 
@@ -47,6 +55,7 @@ typedef struct {
     size_t accuracy_count;
     TelemetryFrame latest;
     bool has_frame;
+    uint64_t observation_epoch;
     uint64_t last_cycle_cpu_ns;
     uint64_t pending_prediction_cpu_ns;
     uint64_t pending_prediction_wall_ns;
@@ -96,8 +105,15 @@ bool governor_observe_at(Governor *governor, const TelemetryFrame *frame,
                          uint64_t now_ns);
 GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
                                     bool fault_escalation);
+GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
+                                                    uint64_t now_ns,
+                                                    uint32_t fault_set_mask);
 size_t governor_commitment_count(const Governor *governor);
 const Commitment *governor_commitment_at(const Governor *governor, size_t index);
+bool governor_commitment_active(const Governor *governor, size_t task_index);
+const RevalidationState *governor_revalidation_state_at(const Governor *governor,
+                                                        size_t task_index);
+bool governor_emergency_safe_mode(const Governor *governor);
 size_t governor_accuracy_count(const Governor *governor);
 const PredictionAccuracyEvent *governor_accuracy_at(const Governor *governor,
                                                     size_t index);

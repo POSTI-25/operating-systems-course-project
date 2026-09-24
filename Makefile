@@ -1,8 +1,8 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Werror -Isrc -Itest
 SANFLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
-CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platform/platform_ipc.c src/core/telemetry.c src/core/task_model.c src/core/ledger.c src/core/gate.c src/core/mode_generator.c src/core/utility.c src/core/prediction.c src/core/governor.c src/sim/scenario.c src/sim/simulator.c
-UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run
+CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platform/platform_ipc.c src/core/telemetry.c src/core/task_model.c src/core/ledger.c src/core/gate.c src/core/mode_generator.c src/core/utility.c src/core/prediction.c src/core/revalidation.c src/core/governor.c src/sim/scenario.c src/sim/simulator.c
+UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation
 UNIT_BINS = $(addprefix build/test_,$(UNIT_NAMES))
 SAN_BINS = $(addprefix build/san_test_,$(UNIT_NAMES))
 
@@ -45,7 +45,7 @@ test: all
 	@set -e; actual=$$(mktemp); trap 'rm -f "$$actual"' EXIT; ./build/golden_runner scenarios/normal_orbit.scn > "$$actual"; diff -u golden/normal_orbit.expected "$$actual"
 	@./build/prediction_ab
 	@./build/prediction_ab scenarios/prediction_trend.scn
-	@./build/sage_rt scenarios/normal_orbit.scn --tick-ms 1 | grep '^SUMMARY '
+	@./build/sage_rt scenarios/normal_orbit.scn --tick-ms 10 | grep '^SUMMARY '
 
 sanitize: $(SAN_BINS) build/san_golden_runner build/san_prediction_ab build/san_sage_rt
 	@set -e; for binary in $(SAN_BINS); do ./$$binary; done

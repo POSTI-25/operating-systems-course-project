@@ -37,6 +37,12 @@ static void full_orbit_and_fault_event_run_over_pipe(void)
     ASSERT_TRUE(platform_ipc_close(&stream));
     ASSERT_EQ_INT(7, stats.tick_cycles);
     ASSERT_EQ_INT(1, stats.fault_cycles);
+    ASSERT_TRUE(governor_revalidation_state_at(&governor, 0)->invalid);
+    ASSERT_EQ_INT(INVALIDATION_OBSERVED_FAULT,
+                  governor_revalidation_state_at(&governor, 0)->record.cause_type);
+    ASSERT_EQ_INT(3,
+                  governor_revalidation_state_at(&governor, 0)->record.trigger_time_ns);
+    ASSERT_TRUE(!governor_commitment_active(&governor, 0));
     ASSERT_EQ_INT(12, stats.last_sim_time_ns);
     ASSERT_EQ_INT(1, governor_commitment_count(&governor));
     ASSERT_EQ_INT(7, stats.metric_count);
