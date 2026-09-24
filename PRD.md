@@ -3,10 +3,10 @@
 
 This is the single source of truth for the MVP build. AI coding agents (GitHub Copilot / Luna, Antigravity) must read the relevant sections before touching code, implement only the phase they are asked for, and never introduce behavior that isn't specified here. If something is ambiguous, stop and flag it in §18 rather than guessing.
 
-Status: **Phase 1 not started.**
+Status: **Phase 1 complete.**
 
 ---
-
+ 
 ## 1. Project Overview
 
 SAGE-RT is a decision-governor loop, not a kernel scheduler. Each cycle it converts spacecraft telemetry into a safe, revocable execution plan for a set of pending tasks. The MVP is a host-PC simulation with synthetic telemetry (no real RTOS, no real hardware). Interfaces are shaped so a later RTOS backend (RTEMS/cFS/F') could replace the simulator without redesigning the core (explicitly out of scope for the MVP — see §2).
@@ -104,6 +104,18 @@ Each module owns one `.c`/`.h` pair. No module reaches into another's internals 
 All units are fixed-point integers in milli-units unless stated otherwise (no floats in the Ledger; floats are fine in Prediction).
 
 **TelemetryFrame** (per channel: `battery_soc_mV_pct`, `charge_rate_mA`, `solar_input_mW`, `eclipse` (bool), `temp_mC[N_SUBSYSTEMS]`, `current_draw_mA`, `fault_flags`, `comm_window_open` (bool), `cpu_avail_pct`, `mem_avail_KB`, `storage_avail_KB`, `sensor_avail_mask`) plus, per channel, `timestamp_ns` and `quality` (`OK` / `STALE` / `MISSING`).
+
+The named subsystem enum for `temp_mC` is:
+
+```c
+typedef enum {
+    SUBSYSTEM_BATTERY = 0,
+    SUBSYSTEM_BUS = 1,
+    SUBSYSTEM_PAYLOAD = 2,
+    SUBSYSTEM_ADCS = 3,
+    N_SUBSYSTEMS = 4
+} Subsystem;
+```
 
 **Task** — `task_id`, `period_ns`, `deadline_ns`, `nominal_exec_ns`, `criticality_class` (0 = safety-critical), `mission_value` (0–1000), per mode (`FULL/THROTTLED/DEGRADED`): `energy_cost_mJ`, `thermal_effect_mC`, `value_fraction_permille` (0–1000; e.g., full=1000, throttled=700, degraded=400 — calibrated per task type), `resource_demand` (cpu_pct, mem_KB, storage_KB, sensor_mask, comm_pct).
 
@@ -220,7 +232,53 @@ Three resource-type behaviors — implement each dimension according to its type
 
 ## 13. Scenario Catalog
 
-Line-oriented text format (no JSON/YAML library). One directive per line, `KEY value value ...`. Exact grammar to be finalized in Phase 1 and appended here once fixed. Required scenarios (golden expected logs live in `/golden`, one per scenario):
+Line-oriented text format (no JSON/YAML library). One directive per line, `KEY value value ...`. Required scenarios (golden expected logs live in `/golden`, one per scenario):
+
+### Lexical rules
+
+- UTF-8/ASCII text, one directive per physical line.
+- Tokens are separated by spaces or tabs.
+- Blank lines and lines whose first non-whitespace character is `#` are ignored.
+- Inline comments begin with `#` after a complete token.
+- Keywords and enum tokens are uppercase and case-sensitive.
+- Integers are base-10 except masks, which accept base-10 or a `0x` hexadecimal prefix.
+- Signed values use an optional leading `-`; all time values are unsigned nanoseconds.
+- Unknown keywords, missing tokens, extra tokens, malformed numbers, duplicate singleton directives, and capacity overflow are errors with a 1-based line number.
+
+### Directive-keyword table
+
+| Keyword | Arguments | Cardinality | Meaning and validation |
+|---|---|---:|---|
+| `SCENARIO` | `<name>` | Exactly 1 | Single token identifier used in diagnostics; `[A-Za-z0-9_-]+`. |
+| `DURATION_NS` | `<duration_ns>` | Exactly 1 | Inclusive simulation end; must be greater than zero. |
+| `STEP_NS` | `<step_ns>` | Exactly 1 | Regular frame interval; must be greater than zero. |
+| `ORBIT` | `<epoch_ns> <period_ns> <eclipse_offset_ns> <eclipse_duration_ns>` | 0 or 1 | Repeating orbit model. `period_ns > 0`, offsets are within the period, eclipse duration is positive, and `offset + duration <= period`. At time `t`, eclipse is true when `(t - epoch) mod period` is in the configured eclipse interval; before epoch it retains initial state. |
+| `INITIAL` | `<channel> [<index>] <value> <timestamp_ns> <quality>` | Once per channel | Defines every initial channel. `<index>` is present only for `TEMP_MC`. Because simulation begins at zero on the shared clock, the initial timestamp must be `0`. |
+| `UPDATE` | `<event_time_ns> <channel> [<index>] <value> <sample_timestamp_ns> <quality>` | 0..256 | Replaces one channel at `event_time_ns`. Events must fall within duration. `<index>` is present only for `TEMP_MC`. An `ECLIPSE` update is invalid when `ORBIT` is present. |
+| `FAULT` | `<event_time_ns> <set_mask> <clear_mask>` | 0..64 | Atomically updates fault flags as `(old | set_mask) & ~clear_mask`; masks must fit `uint32_t`, may not overlap, and event time must be within duration. The resulting fault channel timestamp is the event time with quality `OK`. |
+| `TASK` | `<task_id> <period_ns> <deadline_ns> <nominal_exec_ns> <criticality_class> <mission_value>` | 0..32 | Declares task-level fields. IDs are unique; times are positive; mission value is `0..1000`. |
+| `TASK_MODE` | `<task_id> <mode> <energy_cost_mJ> <thermal_effect_mC> <value_fraction_permille> <cpu_pct> <mem_KB> <storage_KB> <sensor_mask> <comm_pct>` | Exactly 3 per task | Declares `FULL`, `THROTTLED`, or `DEGRADED`; each appears once. Fractions are `0..1000`; CPU and comm are `0..100`; masks fit `uint32_t`; stock demands and energy are non-negative. |
+
+The valid `<channel>` tokens are:
+
+| Token | Index | Value domain |
+|---|---:|---|
+| `BATTERY_SOC_MV_PCT` | No | Non-negative signed 64-bit integer |
+| `CHARGE_RATE_MA` | No | Signed 64-bit integer |
+| `SOLAR_INPUT_MW` | No | Non-negative signed 64-bit integer |
+| `ECLIPSE` | No | `0` or `1` |
+| `TEMP_MC` | Yes, `0..3` | Signed 64-bit integer |
+| `CURRENT_DRAW_MA` | No | Signed 64-bit integer |
+| `FAULT_FLAGS` | No | `0..UINT32_MAX`, decimal or hexadecimal |
+| `COMM_WINDOW_OPEN` | No | `0` or `1` |
+| `CPU_AVAIL_PCT` | No | `0..100` |
+| `MEM_AVAIL_KB` | No | `0..INT64_MAX` |
+| `STORAGE_AVAIL_KB` | No | `0..INT64_MAX` |
+| `SENSOR_AVAIL_MASK` | No | `0..UINT32_MAX`, decimal or hexadecimal |
+
+Valid quality tokens are `OK`, `STALE`, and `MISSING`. A `MISSING` channel still carries a syntactically valid placeholder value and timestamp so the fixed frame representation remains total; later phases decide how conservative policy treats it.
+
+A scenario is valid only when it has `SCENARIO`, `DURATION_NS`, `STEP_NS`, and exactly one initial record for every scalar and every indexed temperature channel. Tasks are optional, but each declared task must have all three executing-mode profiles. Each `TASK_MODE` must reference an earlier `TASK`. Directives otherwise may appear in any order. At a shared event time, the simulator applies orbit transitions, then updates in file order, then faults in file order, and emits one frame. Frames occur at time zero, regular steps, explicit event times, orbit transitions, and the inclusive end time.
 
 1. Normal orbit
 2. Low-SOC eclipse
@@ -267,7 +325,7 @@ Run all four against all 8 scenarios; report side by side, with particular atten
 
 | Phase / Prompt | Scope | Exit Criteria | Status |
 |---|---|---|---|
-| 1 | Foundation & data layer | Deterministic scenario→telemetry/task generation; `test.h`; Makefile; golden-file harness; sanitizers clean | ⬜ Not started |
+| 1 | Foundation & data layer | Deterministic scenario→telemetry/task generation; `test.h`; Makefile; golden-file harness; sanitizers clean | ✅ Done |
 | 2 | Decision core, static | Gate + Ledger standalone-tested; Mode Generator + Utility (Option A); fallback rule; provisional self-cost | ⬜ Not started |
 | 3 | Prediction + governor | Holt's method; poll-based governor; fork/pipe sim; shadow-state overrun handling; final self-cost cap; A/B result | ⬜ Not started |
 | 4 | Revalidation + edge cases | Typed invalidation, hysteresis, gate-repassing restoration; emergency safe mode; stale-telemetry handling | ⬜ Not started |
@@ -291,10 +349,14 @@ Agents update only the Status column (and the Decision Log, §18) — never rewr
 
 - 2026-09-22: Utility function fixed to **Option A** (net-benefit, no division).
 - 2026-09-22: Tech stack fixed to portable POSIX (`poll`, `fork`+`pipe`), no Unity, no CMake — see §17.
+- 2026-09-24: Phase 1 uses the four named thermal subsystems in §5 (`BATTERY`, `BUS`, `PAYLOAD`, `ADCS`) and fixed capacities of 32 tasks, 256 updates, 64 faults, and 512 bytes per scenario line. Exceeding a capacity is a parse error; fixed storage keeps the simulator and future decision path heap-free.
+- 2026-09-24: `src/main.c` is the stub entry point, following the canonical §4.1 tree. The Phase 1 request's “root main.c” wording is interpreted as the project entry point rather than a filesystem-root path.
+- 2026-09-24: The §13 grammar is finalized. Initial source timestamps are zero because the shared simulated clock starts at zero; each `TASK_MODE` follows its `TASK`. Updates may carry their own source timestamp. Parser diagnostics include a 1-based line number.
+- 2026-09-24: The in-process simulator emits one frame at the union of regular ticks, explicit updates and faults, orbit/eclipse transitions, time zero, and the inclusive end. Coincident changes apply in orbit → update → fault order before that single frame. This provides deterministic replay without adding policy behavior.
+- 2026-09-24: The host-PC MVP uses one injected clock for telemetry and task deadlines, as assumed in §12; real hardware clock synchronization remains outside the MVP.
 - **Open**: Holt's `α`, `β` values — finalize empirically in Phase 3, record here.
 - **Open**: prediction horizon margin — finalize in Phase 3, record here.
 - **Open**: revalidation deviation tolerances per channel, and minimum dwell time — finalize in Phase 4, record here.
-- **Open**: scenario file grammar — finalize in Phase 1, append here.
 
 ## 19. Repository & Disclosure Notes
 
