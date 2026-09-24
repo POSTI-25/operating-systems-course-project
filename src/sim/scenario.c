@@ -102,7 +102,7 @@ static bool parse_task(char **tokens, size_t count, TaskTable *table)
     Task task = {0};
     uint64_t v[6];
     size_t i;
-    if (count != 7) return false;
+    if (count != 8) return false;
     for (i = 0; i < 6; ++i) {
         if (!parse_u64(tokens[i + 1], &v[i], false)) return false;
     }
@@ -113,6 +113,11 @@ static bool parse_task(char **tokens, size_t count, TaskTable *table)
     task.nominal_exec_ns = v[3];
     task.criticality_class = (uint8_t)v[4];
     task.mission_value = (uint16_t)v[5];
+    if (strcmp(tokens[7], "BATTERY") == 0) task.primary_subsystem = SUBSYSTEM_BATTERY;
+    else if (strcmp(tokens[7], "BUS") == 0) task.primary_subsystem = SUBSYSTEM_BUS;
+    else if (strcmp(tokens[7], "PAYLOAD") == 0) task.primary_subsystem = SUBSYSTEM_PAYLOAD;
+    else if (strcmp(tokens[7], "ADCS") == 0) task.primary_subsystem = SUBSYSTEM_ADCS;
+    else return false;
     return task_table_add(table, &task);
 }
 
@@ -155,6 +160,7 @@ bool scenario_load_file(FILE *input, Scenario *scenario,
     size_t line_no = 0;
     unsigned initial_seen = 0;
     bool name_seen = false, duration_seen = false, step_seen = false;
+    bool capacity_seen = false, floor_seen = false;
     if (input == NULL || scenario == NULL) return fail(error, error_size, 0, "null argument");
     memset(scenario, 0, sizeof(*scenario));
     while (fgets(line, sizeof(line), input) != NULL) {
@@ -189,6 +195,20 @@ bool scenario_load_file(FILE *input, Scenario *scenario,
             if (count != 2 || step_seen || !parse_u64(tokens[1], &scenario->step_ns, false) ||
                 scenario->step_ns == 0) return fail(error, error_size, line_no, "invalid STEP_NS");
             step_seen = true;
+        } else if (strcmp(tokens[0], "BATTERY_CAPACITY_MJ") == 0) {
+            if (count != 2 || capacity_seen ||
+                !parse_u64(tokens[1], &scenario->battery_capacity_mJ, false) ||
+                scenario->battery_capacity_mJ == 0 ||
+                scenario->battery_capacity_mJ > INT64_MAX)
+                return fail(error, error_size, line_no, "invalid BATTERY_CAPACITY_MJ");
+            capacity_seen = true;
+        } else if (strcmp(tokens[0], "SOC_FLOOR_PERMILLE") == 0) {
+            uint64_t floor;
+            if (count != 2 || floor_seen || !parse_u64(tokens[1], &floor, false) ||
+                floor > 1000)
+                return fail(error, error_size, line_no, "invalid SOC_FLOOR_PERMILLE");
+            scenario->soc_floor_permille = (uint16_t)floor;
+            floor_seen = true;
         } else if (strcmp(tokens[0], "ORBIT") == 0) {
             if (count != 5 || scenario->has_orbit ||
                 !parse_u64(tokens[1], &scenario->orbit_epoch_ns, false) ||
@@ -246,7 +266,8 @@ bool scenario_load_file(FILE *input, Scenario *scenario,
         } else return fail(error, error_size, line_no, "unknown directive");
     }
     if (ferror(input)) return fail(error, error_size, line_no, "read error");
-    if (!name_seen || !duration_seen || !step_seen || initial_seen != ((1U << INITIAL_BITS) - 1U) ||
+    if (!name_seen || !duration_seen || !step_seen || !capacity_seen || !floor_seen ||
+        initial_seen != ((1U << INITIAL_BITS) - 1U) ||
         !task_table_complete(&scenario->tasks)) return fail(error, error_size, line_no, "incomplete scenario");
     for (size_t i = 0; i < scenario->update_count; ++i) {
         if (scenario->updates[i].time_ns > scenario->duration_ns ||

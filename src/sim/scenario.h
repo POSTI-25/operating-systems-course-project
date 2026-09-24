@@ -30,6 +30,8 @@ typedef struct {
     char name[64];
     uint64_t duration_ns;
     uint64_t step_ns;
+    uint64_t battery_capacity_mJ;
+    uint16_t soc_floor_permille;
     bool has_orbit;
     uint64_t orbit_epoch_ns;
     uint64_t orbit_period_ns;

@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "telemetry.h"
+
 #define SAGE_MAX_TASKS 32
 
 typedef enum {
@@ -36,6 +38,7 @@ typedef struct {
     uint64_t nominal_exec_ns;
     uint8_t criticality_class;
     uint16_t mission_value;
+    Subsystem primary_subsystem;
     TaskModeProfile modes[TASK_EXECUTING_MODE_COUNT];
 } Task;
 

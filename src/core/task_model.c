@@ -22,7 +22,8 @@ bool task_table_add(TaskTable *table, const Task *task)
     if (table == NULL || task == NULL || table->count >= SAGE_MAX_TASKS ||
         task_table_find(table, task->task_id) != NULL || task->period_ns == 0 ||
         task->deadline_ns == 0 || task->nominal_exec_ns == 0 ||
-        task->mission_value > 1000) return false;
+        task->mission_value > 1000 || task->primary_subsystem < SUBSYSTEM_BATTERY ||
+        task->primary_subsystem >= N_SUBSYSTEMS) return false;
     table->items[table->count] = *task;
     memset(table->items[table->count].modes, 0,
            sizeof(table->items[table->count].modes));

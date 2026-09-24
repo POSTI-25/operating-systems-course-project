@@ -5,13 +5,13 @@ static void channels_keep_independent_metadata(void)
 {
     TelemetryFrame frame;
     TelemetryChannel got;
-    TelemetryChannel battery = { 80000, 3, TELEMETRY_QUALITY_STALE };
+    TelemetryChannel battery = { 800, 3, TELEMETRY_QUALITY_STALE };
     TelemetryChannel temp = { -1200, 7, TELEMETRY_QUALITY_MISSING };
     telemetry_frame_init(&frame);
     ASSERT_TRUE(telemetry_frame_set(&frame, TELEMETRY_BATTERY_SOC_MV_PCT, 0, battery));
     ASSERT_TRUE(telemetry_frame_set(&frame, TELEMETRY_TEMP_MC, SUBSYSTEM_ADCS, temp));
     ASSERT_TRUE(telemetry_frame_get(&frame, TELEMETRY_BATTERY_SOC_MV_PCT, 0, &got));
-    ASSERT_EQ_INT(80000, got.value);
+    ASSERT_EQ_INT(800, got.value);
     ASSERT_EQ_INT(3, got.timestamp_ns);
     ASSERT_EQ_INT(TELEMETRY_QUALITY_STALE, got.quality);
     ASSERT_TRUE(telemetry_frame_get(&frame, TELEMETRY_TEMP_MC, SUBSYSTEM_ADCS, &got));

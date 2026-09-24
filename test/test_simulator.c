@@ -33,7 +33,7 @@ static void orbit_update_and_fault_events_emit_once(void)
         }
         if (time == 6) {
             ASSERT_TRUE(telemetry_frame_get(&frame, TELEMETRY_BATTERY_SOC_MV_PCT, 0, &channel));
-            ASSERT_EQ_INT(79000, channel.value);
+            ASSERT_EQ_INT(790, channel.value);
             ASSERT_EQ_INT(6, channel.timestamp_ns);
         }
         if (time == 7 || time == 9) {

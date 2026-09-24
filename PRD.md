@@ -105,6 +105,8 @@ All units are fixed-point integers in milli-units unless stated otherwise (no fl
 
 **TelemetryFrame** (per channel: `battery_soc_mV_pct`, `charge_rate_mA`, `solar_input_mW`, `eclipse` (bool), `temp_mC[N_SUBSYSTEMS]`, `current_draw_mA`, `fault_flags`, `comm_window_open` (bool), `cpu_avail_pct`, `mem_avail_KB`, `storage_avail_KB`, `sensor_avail_mask`) plus, per channel, `timestamp_ns` and `quality` (`OK` / `STALE` / `MISSING`).
 
+Despite its legacy name, `battery_soc_mV_pct` is SOC in **permille** (`0..1000`, where `1000` is 100%), not millivolts. `fault_flags` bits 0–3 map respectively to `BATTERY`, `BUS`, `PAYLOAD`, and `ADCS`; bits 4–31 are reserved/unused in the MVP.
+
 The named subsystem enum for `temp_mC` is:
 
 ```c
@@ -117,11 +119,11 @@ typedef enum {
 } Subsystem;
 ```
 
-**Task** — `task_id`, `period_ns`, `deadline_ns`, `nominal_exec_ns`, `criticality_class` (0 = safety-critical), `mission_value` (0–1000), per mode (`FULL/THROTTLED/DEGRADED`): `energy_cost_mJ`, `thermal_effect_mC`, `value_fraction_permille` (0–1000; e.g., full=1000, throttled=700, degraded=400 — calibrated per task type), `resource_demand` (cpu_pct, mem_KB, storage_KB, sensor_mask, comm_pct).
+**Task** — `task_id`, `period_ns`, `deadline_ns`, `nominal_exec_ns`, `criticality_class` (0 = safety-critical), `mission_value` (0–1000), `primary_subsystem` (`BATTERY`/`BUS`/`PAYLOAD`/`ADCS`), per mode (`FULL/THROTTLED/DEGRADED`): `energy_cost_mJ`, `thermal_effect_mC`, `value_fraction_permille` (0–1000; e.g., full=1000, throttled=700, degraded=400 — calibrated per task type), `resource_demand` (cpu_pct, mem_KB, storage_KB, sensor_mask, comm_pct). A mode's thermal effect applies to its task's `primary_subsystem`; class-0 ADCS/FDIR tasks generally select `ADCS` as data, not as a hardcoded rule.
 
 **Candidate** — `task_id`, `mode`, `predicted_cost` (per dimension), `delivered_value` = `mission_value × value_fraction_permille / 1000`.
 
-**LedgerDimension** — one of `CPU`, `ENERGY`, `MEMORY`, `STORAGE`, `SENSOR`, `COMM`. Each has `capacity`, `protected_reserve`, `committed`, `free` (derived, never stored redundantly: `free = capacity − protected_reserve − committed`, and for rate dimensions `committed` is *derived* each tick as the sum of active commitments' demand rather than mutated in place — see §10).
+**LedgerDimension** — one of `CPU`, `ENERGY`, `MEMORY`, `STORAGE`, `SENSOR`, `COMM`. Each has `capacity`, `protected_reserve`, `committed`, `free` (derived, never stored redundantly). Scalar rate/stock free capacity is `capacity − protected_reserve − committed`; rate commitment is derived from active commitments each tick. SENSOR uses the bitmask rule and ENERGY uses the horizon-budget rule in §10.
 
 **Commitment** — `task_id`, `mode`, `assumption_snapshot` (predicted SOC/temp/draw at commit time, plus `forecast_horizon_end`), `commit_time_ns`.
 
@@ -159,12 +161,20 @@ U(candidate) = (1 + FaultUrgency_norm + DeadlineUrgency_norm) × delivered_value
                − (EnergyCost_norm + ThermalRisk_norm + ResourcePressure_norm)
 ```
 
-All `_norm` terms are in `[0,1]`, normalized against their own ceiling as in the master reference doc §5.7/7.2. `delivered_value = mission_value × value_fraction_permille / 1000`. Only `FULL`, `THROTTLED`, `DEGRADED` candidates that survived the Gate are ranked. Ties: prefer the higher-fidelity mode (`FULL` > `THROTTLED` > `DEGRADED`).
+All `_norm` terms are clamped to `[0,1]`, using these finalized quantities:
+
+- `DeadlineUrgency_norm = clamp(nominal_exec_ns / max(time_remaining_to_deadline_ns, 1), 0, 1)`, with remaining time supplied by the caller from the task's absolute deadline instant.
+- `FaultUrgency_norm = 1` iff the fault bit for the task's `primary_subsystem` is set; otherwise `0`. Bits 0–3 follow the §5 mapping.
+- `ThermalRisk_norm = clamp(candidate.thermal_effect_mC / remaining_thermal_margin[primary_subsystem], 0, 1)`.
+- `EnergyCost_norm = clamp(candidate.energy_cost_mJ / ENERGY.capacity, 0, 1)`, where `ENERGY.capacity` is the current horizon budget in mJ (§10).
+- `ResourcePressure_norm` is the maximum of `candidate.demand[dim] / free[dim] at generation time` for `CPU`, `MEMORY`, `STORAGE`, and `COMM`, clamped to `[0,1]`. `SENSOR` is excluded because it is bitmask feasibility, not a pressure gradient.
+
+For a zero or negative denominator in cost/risk/pressure terms, a zero numerator contributes `0` and a positive numerator contributes `1`; this avoids division by zero while preserving conservative pressure. `delivered_value = mission_value × value_fraction_permille / 1000`. Only `FULL`, `THROTTLED`, `DEGRADED` candidates that survived the Gate are ranked. Ties: prefer the higher-fidelity mode (`FULL` > `THROTTLED` > `DEGRADED`).
 
 ### 7.3 Fallback rule (when no executing mode survives the Gate)
 
 - If `criticality_class == 0`: **no fallback allowed.** Trigger the emergency safe mode (§12).
-- Else, prefer `DEFERRED` over `REJECTED` **iff** both: (a) the deadline still permits a future execution window, and (b) the Ledger can hold a pending reservation for the task without violating any predicate.
+- Else, prefer `DEFERRED` over `REJECTED` iff the deadline still permits an execution window starting at the next tick. `DEFERRED` reserves zero in every Ledger dimension and re-enters candidate generation on the next tick; there is no pending-reservation test or queue.
 - Otherwise select `REJECTED`.
 - `REJECTED` outcomes are logged and counted separately from deadline misses (§14) — a reject-by-design is not a scheduling failure.
 
@@ -202,7 +212,13 @@ Three resource-type behaviors — implement each dimension according to its type
 |---|---|---|
 | **Rate** | CPU, COMM | Renews every tick/window. `committed` is *derived* each tick as the sum of active commitments' demand (never mutated/reset by hand). `free = capacity − protected_reserve − committed`. Comms capacity = 0 during blackout, which naturally excludes comm-dependent tasks. |
 | **Stock** | MEMORY, STORAGE | Persists across ticks until the task completes, its data is downlinked, or it's explicitly released. `committed` only changes on an explicit allocate/release event, never automatically per tick. |
-| **Budget** | ENERGY | A horizon budget, recomputed each tick: `(SOC_pred − floor) × capacity + predicted_harvest(H) − planned_draws_within(H)`. Driven by the battery/solar model's own state update, not a commit/release pattern. |
+| **Budget** | ENERGY | A horizon budget in mJ, recomputed each tick: `((SOC_pred_permille − floor_permille) / 1000) × BATTERY_CAPACITY_MJ + predicted_harvest_mJ(H) − planned_draws_mJ_within(H)`. Driven by the battery/solar model's own state update, not a commit/release counter. |
+
+`SENSOR` is a rate-type bitmask dimension: `committed_mask` is the bitwise OR of active commitments' sensor demands, and `free_mask = capacity_mask & ~protected_reserve_mask & ~committed_mask`. A candidate is feasible iff its demand mask is contained in the appropriate free mask. Class-0 tasks may also use uncommitted protected bits; other classes may use only `free_mask`. An already committed bit is never available to a second task.
+
+`BATTERY_CAPACITY_MJ` (physical battery capacity) and `SOC_FLOOR_PERMILLE` are scenario/config constants. `available_energy_mJ = (soc_permille / 1000) × BATTERY_CAPACITY_MJ`. The ENERGY horizon capacity, in mJ, is recomputed as `((SOC_pred_permille − floor_permille) / 1000) × BATTERY_CAPACITY_MJ + predicted_harvest_mJ(H) − planned_draws_mJ_within(H)`. For same-tick commit checks, the Ledger derives active task draws from its commitment records; caller-supplied `planned_draws_mJ_within(H)` contains only other draws, so existing commitments are neither omitted nor counted twice. ENERGY has no separately mutated committed counter. Its current horizon capacity is the §7.2 energy-cost normalization denominator. The Phase 2 self-cost reserve is `0` pending Phase 3 measurement.
+
+`DEFERRED` consumes no resources and holds no reservation. On the next tick it returns to normal candidate generation; if the deadline no longer permits a future execution window, fallback becomes `REJECTED`.
 
 **Protected-reserve access rule (hard rule, no exceptions):** only `criticality_class == 0` tasks (attitude control, FDIR) may draw against `protected_reserve`. Every other task is restricted to `free`, regardless of utility score. This is enforced in Gate predicate 3 (§7.1), not just documented.
 
@@ -234,6 +250,8 @@ Three resource-type behaviors — implement each dimension according to its type
 
 Line-oriented text format (no JSON/YAML library). One directive per line, `KEY value value ...`. Required scenarios (golden expected logs live in `/golden`, one per scenario):
 
+`FAULT_FLAGS` uses bits 0–3 for `BATTERY`, `BUS`, `PAYLOAD`, and `ADCS` respectively. Bits 4–31 are reserved/unused in the MVP.
+
 ### Lexical rules
 
 - UTF-8/ASCII text, one directive per physical line.
@@ -252,18 +270,20 @@ Line-oriented text format (no JSON/YAML library). One directive per line, `KEY v
 | `SCENARIO` | `<name>` | Exactly 1 | Single token identifier used in diagnostics; `[A-Za-z0-9_-]+`. |
 | `DURATION_NS` | `<duration_ns>` | Exactly 1 | Inclusive simulation end; must be greater than zero. |
 | `STEP_NS` | `<step_ns>` | Exactly 1 | Regular frame interval; must be greater than zero. |
+| `BATTERY_CAPACITY_MJ` | `<capacity_mJ>` | Exactly 1 | Physical battery capacity, integer `1..INT64_MAX` mJ; used with SOC permille in §10. |
+| `SOC_FLOOR_PERMILLE` | `<floor_permille>` | Exactly 1 | Battery floor in `0..1000`; used in the §10 horizon budget. |
 | `ORBIT` | `<epoch_ns> <period_ns> <eclipse_offset_ns> <eclipse_duration_ns>` | 0 or 1 | Repeating orbit model. `period_ns > 0`, offsets are within the period, eclipse duration is positive, and `offset + duration <= period`. At time `t`, eclipse is true when `(t - epoch) mod period` is in the configured eclipse interval; before epoch it retains initial state. |
 | `INITIAL` | `<channel> [<index>] <value> <timestamp_ns> <quality>` | Once per channel | Defines every initial channel. `<index>` is present only for `TEMP_MC`. Because simulation begins at zero on the shared clock, the initial timestamp must be `0`. |
 | `UPDATE` | `<event_time_ns> <channel> [<index>] <value> <sample_timestamp_ns> <quality>` | 0..256 | Replaces one channel at `event_time_ns`. Events must fall within duration. `<index>` is present only for `TEMP_MC`. An `ECLIPSE` update is invalid when `ORBIT` is present. |
 | `FAULT` | `<event_time_ns> <set_mask> <clear_mask>` | 0..64 | Atomically updates fault flags as `(old | set_mask) & ~clear_mask`; masks must fit `uint32_t`, may not overlap, and event time must be within duration. The resulting fault channel timestamp is the event time with quality `OK`. |
-| `TASK` | `<task_id> <period_ns> <deadline_ns> <nominal_exec_ns> <criticality_class> <mission_value>` | 0..32 | Declares task-level fields. IDs are unique; times are positive; mission value is `0..1000`. |
+| `TASK` | `<task_id> <period_ns> <deadline_ns> <nominal_exec_ns> <criticality_class> <mission_value> <primary_subsystem>` | 0..32 | Declares task-level fields. IDs are unique; times are positive; mission value is `0..1000`; `primary_subsystem` is `BATTERY`, `BUS`, `PAYLOAD`, or `ADCS`. |
 | `TASK_MODE` | `<task_id> <mode> <energy_cost_mJ> <thermal_effect_mC> <value_fraction_permille> <cpu_pct> <mem_KB> <storage_KB> <sensor_mask> <comm_pct>` | Exactly 3 per task | Declares `FULL`, `THROTTLED`, or `DEGRADED`; each appears once. Fractions are `0..1000`; CPU and comm are `0..100`; masks fit `uint32_t`; stock demands and energy are non-negative. |
 
 The valid `<channel>` tokens are:
 
 | Token | Index | Value domain |
 |---|---:|---|
-| `BATTERY_SOC_MV_PCT` | No | Non-negative signed 64-bit integer |
+| `BATTERY_SOC_MV_PCT` | No | SOC permille, `0..1000` |
 | `CHARGE_RATE_MA` | No | Signed 64-bit integer |
 | `SOLAR_INPUT_MW` | No | Non-negative signed 64-bit integer |
 | `ECLIPSE` | No | `0` or `1` |
@@ -278,7 +298,7 @@ The valid `<channel>` tokens are:
 
 Valid quality tokens are `OK`, `STALE`, and `MISSING`. A `MISSING` channel still carries a syntactically valid placeholder value and timestamp so the fixed frame representation remains total; later phases decide how conservative policy treats it.
 
-A scenario is valid only when it has `SCENARIO`, `DURATION_NS`, `STEP_NS`, and exactly one initial record for every scalar and every indexed temperature channel. Tasks are optional, but each declared task must have all three executing-mode profiles. Each `TASK_MODE` must reference an earlier `TASK`. Directives otherwise may appear in any order. At a shared event time, the simulator applies orbit transitions, then updates in file order, then faults in file order, and emits one frame. Frames occur at time zero, regular steps, explicit event times, orbit transitions, and the inclusive end time.
+A scenario is valid only when it has `SCENARIO`, `DURATION_NS`, `STEP_NS`, `BATTERY_CAPACITY_MJ`, `SOC_FLOOR_PERMILLE`, and exactly one initial record for every scalar and every indexed temperature channel. Tasks are optional, but each declared task must have all three executing-mode profiles. Each `TASK_MODE` must reference an earlier `TASK`. Directives otherwise may appear in any order. At a shared event time, the simulator applies orbit transitions, then updates in file order, then faults in file order, and emits one frame. Frames occur at time zero, regular steps, explicit event times, orbit transitions, and the inclusive end time.
 
 1. Normal orbit
 2. Low-SOC eclipse
@@ -357,6 +377,16 @@ Agents update only the Status column (and the Decision Log, §18) — never rewr
 - **Open**: Holt's `α`, `β` values — finalize empirically in Phase 3, record here.
 - **Open**: prediction horizon margin — finalize in Phase 3, record here.
 - **Open**: revalidation deviation tolerances per channel, and minimum dwell time — finalize in Phase 4, record here.
+- 2026-09-24: **Retroactive Phase 1 contract fix** — `Task.primary_subsystem` was added and `TASK` gained a final subsystem token; `BATTERY_CAPACITY_MJ` and `SOC_FLOOR_PERMILLE` became required scenario constants. The legacy `battery_soc_mV_pct` field now explicitly means SOC permille (`0..1000`). `normal_orbit.scn`, its golden output, parser, and Phase 1 tests were amended and `make test` passed before Phase 2 implementation.
+- 2026-09-24: **Phase 2 decision** — §7.2 uses the five natural denominators and formulas stated there. Fault bits 0–3 map to the named subsystems, and per-mode thermal effect applies only to `Task.primary_subsystem`.
+- 2026-09-24: **Phase 2 decision** — `DEFERRED` reserves zero and is reconsidered on the next tick; there is no pending reservation or separate queue. The former §7.3 reservation condition is removed.
+- 2026-09-24: **Phase 2 decision** — SENSOR is a derived rate-type bitmask with exclusive active holdings and protected bits available only to class 0. ENERGY's horizon capacity is computed in mJ from SOC permille using scenario `BATTERY_CAPACITY_MJ` and `SOC_FLOOR_PERMILLE`.
+- 2026-09-24: **Phase 2 implementation convention** — if a normalized cost/risk/pressure term has a nonpositive denominator, zero demand yields `0` and positive demand yields `1`. This preserves a defined, conservative result without another ceiling constant.
+- 2026-09-24: **Phase 2 Ledger commit semantics** — active task energy draws are derived from Ledger commitment records for subsequent same-tick checks; the caller supplies only other planned draws. This prevents double counting and same-tick overcommitment without a separate ENERGY counter.
+- 2026-09-24: **Phase 2 Gate integrity** — the Gate returns an opaque, caller-stored survivor set and verifies its contents before ranking or fallback. Mutating a filtered candidate invalidates the set rather than allowing Utility to rank un-gated data. This is an in-process data-integrity check, not a security boundary against arbitrary memory tampering.
+- 2026-09-24: **Phase 2 range alignment** — scenario `BATTERY_CAPACITY_MJ` is restricted to `1..INT64_MAX`, matching the Ledger's signed mJ arithmetic range.
+- **Open, Phase 2 energy lifecycle**: After `ledger_release_rate` ends a task, should its energy draw remain committed until a fresh SOC/horizon-budget update reflects that draw? Immediate release can fund a second task from the unchanged budget. Awaiting an explicit rule before marking Phase 2 complete.
+- 2026-09-24: **Provisional, non-binding Phase 2 self-cost** — 50,534 ns process CPU time per static steps 3–6 pass, averaged over 2,000 runs of eight hand-constructed tasks on WSL Ubuntu with GCC at the Makefile's default optimization level. Measured with `CLOCK_PROCESS_CPUTIME_ID`; each timed pass includes mode generation, Gate, Utility/fallback, and Ledger commits, plus timing-call overhead. It excludes prediction and is not a cap. The provisional CPU and energy self-cost reservations are both `0` until Phase 3's final measurement and modeled energy assumption.
 
 ## 19. Repository & Disclosure Notes
 

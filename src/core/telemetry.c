@@ -33,7 +33,7 @@ static bool valid_value(TelemetryChannelId id, int64_t value)
     case TELEMETRY_CPU_AVAIL_PCT: return value >= 0 && value <= 100;
     case TELEMETRY_FAULT_FLAGS:
     case TELEMETRY_SENSOR_AVAIL_MASK: return value >= 0 && value <= UINT32_MAX;
-    case TELEMETRY_BATTERY_SOC_MV_PCT:
+    case TELEMETRY_BATTERY_SOC_MV_PCT: return value >= 0 && value <= 1000;
     case TELEMETRY_SOLAR_INPUT_MW:
     case TELEMETRY_MEM_AVAIL_KB:
     case TELEMETRY_STORAGE_AVAIL_KB: return value >= 0;

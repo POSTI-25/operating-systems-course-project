@@ -3,6 +3,17 @@
 #include <inttypes.h>
 #include <stdio.h>
 
+static const char *subsystem_name(Subsystem subsystem)
+{
+    switch (subsystem) {
+    case SUBSYSTEM_BATTERY: return "BATTERY";
+    case SUBSYSTEM_BUS: return "BUS";
+    case SUBSYSTEM_PAYLOAD: return "PAYLOAD";
+    case SUBSYSTEM_ADCS: return "ADCS";
+    default: return NULL;
+    }
+}
+
 static bool print_frame(uint64_t time, const TelemetryFrame *frame)
 {
     int id;
@@ -48,6 +59,12 @@ int main(int argc, char **argv)
         return 2;
     }
     (void)fclose(input);
+    for (size_t i = 0; i < scenario.tasks.count; ++i) {
+        const Task *task = &scenario.tasks.items[i];
+        const char *name = subsystem_name(task->primary_subsystem);
+        if (name == NULL || printf("TASK id=%" PRIu32 " primary_subsystem=%s\n",
+                                   task->task_id, name) < 0) return 2;
+    }
     if (!platform_clock_init(&clock, PLATFORM_CLOCK_VIRTUAL, 0) ||
         !simulator_init(&sim, &scenario, &clock)) return 2;
     while ((result = simulator_next(&sim, &frame, &time)) == SIMULATOR_FRAME) {

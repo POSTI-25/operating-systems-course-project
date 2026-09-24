@@ -5,7 +5,8 @@ static void table_keeps_all_three_profiles(void)
 {
     TaskTable table;
     Task task = { .task_id = 9, .period_ns = 10, .deadline_ns = 8,
-                  .nominal_exec_ns = 2, .criticality_class = 0, .mission_value = 800 };
+                  .nominal_exec_ns = 2, .criticality_class = 0, .mission_value = 800,
+                  .primary_subsystem = SUBSYSTEM_ADCS };
     TaskModeProfile profile = { .energy_cost_mJ = 42, .thermal_effect_mC = -3,
         .value_fraction_permille = 700,
         .resource_demand = { 20, 100, 200, 4, 5 } };
@@ -23,6 +24,7 @@ static void table_keeps_all_three_profiles(void)
     ASSERT_EQ_INT(42, got->modes[TASK_MODE_FULL].energy_cost_mJ);
     ASSERT_EQ_INT(-3, got->modes[TASK_MODE_DEGRADED].thermal_effect_mC);
     ASSERT_EQ_INT(200, got->modes[TASK_MODE_THROTTLED].resource_demand.storage_KB);
+    ASSERT_EQ_INT(SUBSYSTEM_ADCS, got->primary_subsystem);
 }
 
 static void invalid_tasks_and_profiles_are_rejected(void)
