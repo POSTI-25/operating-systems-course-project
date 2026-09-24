@@ -8,6 +8,7 @@
 #include "sim/scenario.h"
 #include "platform/platform_ipc.h"
 #include "adapter/execution_adapter.h"
+#include "adapter/logger.h"
 #include <stdio.h>
 
 #define GOVERNOR_MAX_METRICS 10000
@@ -62,6 +63,8 @@ typedef struct {
     uint64_t pending_prediction_cpu_ns;
     uint64_t pending_prediction_wall_ns;
     uint64_t last_prediction_wall_ns;
+    LogRecord last_records[SAGE_MAX_TASKS];
+    size_t last_record_count;
 } Governor;
 
 typedef enum {
@@ -117,6 +120,8 @@ const RevalidationState *governor_revalidation_state_at(const Governor *governor
                                                         size_t task_index);
 const ExecutionState *governor_execution_at(const Governor *governor,
                                             size_t task_index);
+const LogRecord *governor_log_record_at(const Governor *governor,
+                                        size_t index);
 bool governor_emergency_safe_mode(const Governor *governor);
 size_t governor_accuracy_count(const Governor *governor);
 const PredictionAccuracyEvent *governor_accuracy_at(const Governor *governor,

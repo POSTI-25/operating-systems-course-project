@@ -14,8 +14,10 @@ static void full_orbit_and_fault_event_run_over_pipe(void)
     SimulatorPipe stream;
     GovernorRunStats stats;
     FILE *metrics = tmpfile();
-    char line[256];
+    char line[2048];
     size_t prediction_lines = 0;
+    size_t decision_lines = 0;
+    size_t fault_decision_lines = 0;
     size_t i;
     ASSERT_TRUE(input != NULL);
     ASSERT_TRUE(scenario_load_file(input, &scenario, error, sizeof(error)));
@@ -57,14 +59,61 @@ static void full_orbit_and_fault_event_run_over_pipe(void)
     ASSERT_TRUE(strstr(line, "TICK ") == line);
     while (fgets(line, sizeof(line), metrics) != NULL) {
         if (strstr(line, "PRED ") == line) ++prediction_lines;
+        if (strstr(line, "DECISION ") == line) {
+            ++decision_lines;
+            if (strstr(line, "trigger=FAULT") != NULL)
+                ++fault_decision_lines;
+        }
     }
     ASSERT_TRUE(prediction_lines > 0);
+    ASSERT_EQ_INT(8, decision_lines);
+    ASSERT_EQ_INT(1, fault_decision_lines);
     ASSERT_TRUE(strstr(line, "SUMMARY ") == line);
     fclose(metrics);
+}
+
+static void overrun_emits_no_tentative_decision_record(void)
+{
+    static Scenario scenario;
+    static Governor governor;
+    GovernorConfig config = {0};
+    SimulatorPipe stream;
+    GovernorRunStats stats;
+    FILE *input = fopen("scenarios/normal_orbit.scn", "r");
+    FILE *output = tmpfile();
+    char error[128];
+    char line[2048];
+    size_t overruns = 0;
+    size_t decisions = 0;
+    size_t i;
+    ASSERT_TRUE(input != NULL && output != NULL);
+    ASSERT_TRUE(scenario_load_file(input, &scenario, error, sizeof(error)));
+    fclose(input);
+    config.alpha = PREDICTION_DEFAULT_ALPHA;
+    config.beta = PREDICTION_DEFAULT_BETA;
+    config.lookahead_ns = scenario.step_ns;
+    config.self_cost_cap_ns = 1;
+    config.test_injected_cpu_ns_per_task = 2000000;
+    for (i = 0; i < N_SUBSYSTEMS; ++i)
+        config.thermal_limit_mC[i] = 100000;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(platform_ipc_spawn(&stream, &scenario, 0));
+    ASSERT_TRUE(governor_run_pipe_logged(&governor, &stream, &stats, output));
+    ASSERT_TRUE(platform_ipc_close(&stream));
+    rewind(output);
+    while (fgets(line, sizeof(line), output) != NULL) {
+        if (strstr(line, "OVERRUN ") == line) ++overruns;
+        if (strstr(line, "DECISION ") == line) ++decisions;
+    }
+    ASSERT_TRUE(overruns > 0);
+    ASSERT_EQ_INT(0, decisions);
+    ASSERT_EQ_INT(0, governor.last_record_count);
+    fclose(output);
 }
 
 int main(void)
 {
     RUN_TEST(full_orbit_and_fault_event_run_over_pipe);
+    RUN_TEST(overrun_emits_no_tentative_decision_record);
     return test_failures != 0;
 }
