@@ -1,8 +1,8 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Werror -Isrc -Itest
 SANFLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
-CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platform/platform_ipc.c src/core/telemetry.c src/core/task_model.c src/core/ledger.c src/core/gate.c src/core/mode_generator.c src/core/utility.c src/core/prediction.c src/core/revalidation.c src/core/governor.c src/sim/scenario.c src/sim/simulator.c src/adapter/execution_adapter.c
-UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation execution_adapter
+CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platform/platform_ipc.c src/core/telemetry.c src/core/task_model.c src/core/ledger.c src/core/gate.c src/core/mode_generator.c src/core/utility.c src/core/prediction.c src/core/revalidation.c src/core/governor.c src/sim/scenario.c src/sim/simulator.c src/adapter/execution_adapter.c src/adapter/logger.c
+UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation execution_adapter logger
 UNIT_BINS = $(addprefix build/test_,$(UNIT_NAMES))
 SAN_BINS = $(addprefix build/san_test_,$(UNIT_NAMES))
 
