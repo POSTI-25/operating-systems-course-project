@@ -1,9 +1,11 @@
 #include "core/prediction.h"
+#include "core/governor.h"
 #include "platform/platform_clock.h"
 #include "sim/scenario.h"
 #include "sim/simulator.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +17,8 @@ static uint64_t absolute_error(int64_t value)
 int main(int argc, char **argv)
 {
     static Scenario scenario;
+    static Governor with_prediction;
+    static Governor without_prediction;
     const char *path = argc > 1 ? argv[1] : "scenarios/normal_orbit.scn";
     FILE *input = fopen(path, "r");
     char error[128];
@@ -34,6 +38,7 @@ int main(int argc, char **argv)
     size_t count;
     size_t i;
     SimulatorResult result;
+    GovernorConfig config = {0};
     if (input == NULL || !scenario_load_file(input, &scenario, error, sizeof(error))) {
         fprintf(stderr, "A/B scenario load failed\n");
         return 1;
@@ -43,7 +48,22 @@ int main(int argc, char **argv)
         !simulator_init(&simulator, &scenario, &clock) ||
         !prediction_engine_init(&engine, PREDICTION_DEFAULT_ALPHA,
             PREDICTION_DEFAULT_BETA, scenario.step_ns, scenario.step_ns)) return 1;
+    config.alpha = PREDICTION_DEFAULT_ALPHA;
+    config.beta = PREDICTION_DEFAULT_BETA;
+    config.lookahead_ns = scenario.step_ns;
+    config.self_cost_cap_ns = UINT64_MAX;
+    for (i = 0; i < N_SUBSYSTEMS; ++i)
+        config.thermal_limit_mC[i] = 100000;
+    config.prediction_enabled = true;
+    if (!governor_init(&with_prediction, &scenario, &config)) return 1;
+    config.prediction_enabled = false;
+    if (!governor_init(&without_prediction, &scenario, &config)) return 1;
     while ((result = simulator_next(&simulator, &actual, &now_ns)) == SIMULATOR_FRAME) {
+        if (!governor_observe_at(&with_prediction, &actual, now_ns) ||
+            !governor_observe_at(&without_prediction, &actual, now_ns) ||
+            governor_cycle(&with_prediction, now_ns, false) != GOVERNOR_CYCLE_OK ||
+            governor_cycle(&without_prediction, now_ns, false) != GOVERNOR_CYCLE_OK)
+            return 1;
         if (!prediction_tracker_observe(&predicted, now_ns, &actual, events,
                                          PREDICTION_MAX_PENDING, &count)) return 1;
         for (i = 0; i < count; ++i) {
@@ -69,7 +89,10 @@ int main(int argc, char **argv)
          predicted_abs >= persistence_abs)) return 1;
     printf("scenario=%s samples=%" PRIu64
            " predicted_soc_abs_error=%" PRIu64
-           " persistence_soc_abs_error=%" PRIu64 "\n",
-           scenario.name, samples, predicted_abs, persistence_abs);
+           " persistence_soc_abs_error=%" PRIu64
+           " predicted_commits=%zu persistence_commits=%zu\n",
+           scenario.name, samples, predicted_abs, persistence_abs,
+           governor_commitment_count(&with_prediction),
+           governor_commitment_count(&without_prediction));
     return 0;
 }

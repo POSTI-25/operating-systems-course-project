@@ -188,9 +188,9 @@ T_t = β·(L_t − L_{t−1}) + (1−β)·T_{t−1}
 forecast(n steps ahead) = L_t + n·T_t
 ```
 
-- Default `α = 0.3`, `β = 0.1` (tune empirically in Phase 3; record the chosen values here once fixed).
+- Final MVP defaults: `α = 0.3`, `β = 0.1`. The Phase 3 A/B in §18 retained these values; the smooth-trend scenario improved forecast error, while the abrupt normal-orbit update did not.
 - **Re-seed** `T_t = 0` at eclipse entry/exit (terminator crossing), since the orbit-phase correction supplies the known step change and the trend term shouldn't fight it.
-- Horizon `H` = task's predicted execution duration + a fixed lookahead margin (value TBD in Phase 3, record here once fixed).
+- Horizon `H` = task's `nominal_exec_ns` + one scenario `STEP_NS` of lookahead. This covers one additional telemetry/tick interval without introducing a separate scenario directive.
 - O(1) update per sample, no matrix ops. This is the MVP-committed mechanism; do not substitute a physics-based propagator (that is a documented future embodiment, out of scope).
 - Predicted-vs-actual error must be logged (store the prediction, compare when horizon elapses) to support the with/without-prediction A/B in Phase 3.
 
@@ -216,7 +216,7 @@ Three resource-type behaviors — implement each dimension according to its type
 
 `SENSOR` is a rate-type bitmask dimension: `committed_mask` is the bitwise OR of active commitments' sensor demands, and `free_mask = capacity_mask & ~protected_reserve_mask & ~committed_mask`. A candidate is feasible iff its demand mask is contained in the appropriate free mask. Class-0 tasks may also use uncommitted protected bits; other classes may use only `free_mask`. An already committed bit is never available to a second task.
 
-`BATTERY_CAPACITY_MJ` (physical battery capacity) and `SOC_FLOOR_PERMILLE` are scenario/config constants. `available_energy_mJ = (soc_permille / 1000) × BATTERY_CAPACITY_MJ`. The ENERGY horizon capacity, in mJ, is recomputed as `((SOC_pred_permille − floor_permille) / 1000) × BATTERY_CAPACITY_MJ + predicted_harvest_mJ(H) − planned_draws_mJ_within(H)`. For same-tick commit checks, the Ledger derives active task draws from its commitment records; caller-supplied `planned_draws_mJ_within(H)` contains only other draws, so existing commitments are neither omitted nor counted twice. ENERGY has no separately mutated committed counter. Its current horizon capacity is the §7.2 energy-cost normalization denominator. The Phase 2 self-cost reserve is `0` pending Phase 3 measurement.
+`BATTERY_CAPACITY_MJ` (physical battery capacity) and `SOC_FLOOR_PERMILLE` are scenario/config constants. `available_energy_mJ = (soc_permille / 1000) × BATTERY_CAPACITY_MJ`. The ENERGY horizon capacity, in mJ, is recomputed as `((SOC_pred_permille − floor_permille) / 1000) × BATTERY_CAPACITY_MJ + predicted_harvest_mJ(H) − planned_draws_mJ_within(H)`. For same-tick commit checks, the Ledger derives active task draws from its commitment records; caller-supplied `planned_draws_mJ_within(H)` contains only other draws, so existing commitments are neither omitted nor counted twice. ENERGY has no separately mutated committed counter. After a task's rate resources are released, its energy draw remains committed until a fresh SOC/horizon-budget update reflects that draw. Its current horizon capacity is the §7.2 energy-cost normalization denominator. Phase 3 reserves the calibrated decision-cycle self-cost on CPU and ENERGY.
 
 `DEFERRED` consumes no resources and holds no reservation. On the next tick it returns to normal candidate generation; if the deadline no longer permits a future execution window, fallback becomes `REJECTED`.
 
@@ -226,10 +226,12 @@ Three resource-type behaviors — implement each dimension according to its type
 - CPU: **measured** via `CLOCK_PROCESS_CPUTIME_ID`, capped at p99.9 (or max) + margin.
 - Energy: **modeled**, `E_self = measured_CPU_seconds × assumed_active_power_W` (joules), where `assumed_active_power_W` is a stated, documented constant (e.g. from a representative flight-processor datasheet) — never treated as measured. Label every energy figure downstream (§14 metrics, §15 risks) as modeled.
 - Take a **provisional** measurement after Phase 2 (no prediction yet) — mark it non-binding. Take the **final** measurement and hard cap after Phase 3 (prediction included).
+- Phase 3 implementation calibrates 2,000 full decision passes (including prediction-update CPU), sets the enforced cap to measured maximum + 25% + 1,000 ns, and reserves the cap-sized CPU/energy cost. The energy estimate uses an explicitly assumed, not measured, active power of `2.0 W` and rounds up to a whole mJ. The cap is recalibrated at startup, so the exact nanosecond value is host-dependent; a representative result is recorded in §18.
 
 ## 11. Real-Time / Governor Spec
 
 - Single injectable clock (`platform_clock`): virtual clock (deterministic, fast — used for tests/metrics runs) and real clock with a configurable time-scale factor (for the live demo, since 1 real orbit ≈ 90 min).
+- Phase 3 demo mapping defaults one scenario `STEP_NS` to one real second, preserving `normal_orbit.scn` unchanged. `--tick-ms N` overrides that real interval for CI/demo runs; virtual-clock tests are instantaneous.
 - **Governor loop**: `poll()` on the pipe fd from the forked simulator, with a timeout computed from the next absolute tick time on `CLOCK_MONOTONIC` (recompute each iteration — do not use a fixed relative sleep, to avoid drift). A fault-escalation message arriving on the pipe triggers an immediate cycle, independent of the tick.
 - **Concurrency model**: no threads. The simulator runs as a separate process (`fork()`), writing fixed-size messages ≤ `PIPE_BUF` to a `pipe()` (atomic writes, no locking needed). Message types: telemetry frame, fault-escalation event.
 - **Run-to-completion with shadow state**: each cycle mutates a copy of the Ledger/plan and swaps in only at the end. If the cycle exceeds its self-cost budget (checked at per-task boundaries within the cycle), discard the shadow and keep the last known-safe plan (watchdog-style, not best-effort continuation).
@@ -346,8 +348,8 @@ Run all four against all 8 scenarios; report side by side, with particular atten
 | Phase / Prompt | Scope | Exit Criteria | Status |
 |---|---|---|---|
 | 1 | Foundation & data layer | Deterministic scenario→telemetry/task generation; `test.h`; Makefile; golden-file harness; sanitizers clean | ✅ Done |
-| 2 | Decision core, static | Gate + Ledger standalone-tested; Mode Generator + Utility (Option A); fallback rule; provisional self-cost | ⬜ Not started |
-| 3 | Prediction + governor | Holt's method; poll-based governor; fork/pipe sim; shadow-state overrun handling; final self-cost cap; A/B result | ⬜ Not started |
+| 2 | Decision core, static | Gate + Ledger standalone-tested; Mode Generator + Utility (Option A); fallback rule; provisional self-cost | ✅ Done |
+| 3 | Prediction + governor | Holt's method; poll-based governor; fork/pipe sim; shadow-state overrun handling; final self-cost cap; A/B result | ✅ Done |
 | 4 | Revalidation + edge cases | Typed invalidation, hysteresis, gate-repassing restoration; emergency safe mode; stale-telemetry handling | ⬜ Not started |
 | 5 | Execution, scenarios, baselines, evidence | All 8 scenarios; 4 baseline configs; metrics report; novelty traceability check | ⬜ Not started |
 
@@ -374,8 +376,7 @@ Agents update only the Status column (and the Decision Log, §18) — never rewr
 - 2026-09-24: The §13 grammar is finalized. Initial source timestamps are zero because the shared simulated clock starts at zero; each `TASK_MODE` follows its `TASK`. Updates may carry their own source timestamp. Parser diagnostics include a 1-based line number.
 - 2026-09-24: The in-process simulator emits one frame at the union of regular ticks, explicit updates and faults, orbit/eclipse transitions, time zero, and the inclusive end. Coincident changes apply in orbit → update → fault order before that single frame. This provides deterministic replay without adding policy behavior.
 - 2026-09-24: The host-PC MVP uses one injected clock for telemetry and task deadlines, as assumed in §12; real hardware clock synchronization remains outside the MVP.
-- **Open**: Holt's `α`, `β` values — finalize empirically in Phase 3, record here.
-- **Open**: prediction horizon margin — finalize in Phase 3, record here.
+- 2026-09-24: **Phase 3 prediction constants** — retain `α = 0.3`, `β = 0.1`; set lookahead margin to one `STEP_NS`. On the 20-step smooth SOC trend, Holt reduced total absolute SOC forecast error from 270 to 234 permille over 18 matched horizons; on `normal_orbit`, the abrupt update increased it from 40 to 49 over seven horizons. Both governors made one commitment in each scenario; this A/B shows forecast improvement on a trend, not a decision or safety improvement.
 - **Open**: revalidation deviation tolerances per channel, and minimum dwell time — finalize in Phase 4, record here.
 - 2026-09-24: **Retroactive Phase 1 contract fix** — `Task.primary_subsystem` was added and `TASK` gained a final subsystem token; `BATTERY_CAPACITY_MJ` and `SOC_FLOOR_PERMILLE` became required scenario constants. The legacy `battery_soc_mV_pct` field now explicitly means SOC permille (`0..1000`). `normal_orbit.scn`, its golden output, parser, and Phase 1 tests were amended and `make test` passed before Phase 2 implementation.
 - 2026-09-24: **Phase 2 decision** — §7.2 uses the five natural denominators and formulas stated there. Fault bits 0–3 map to the named subsystems, and per-mode thermal effect applies only to `Task.primary_subsystem`.
@@ -385,8 +386,12 @@ Agents update only the Status column (and the Decision Log, §18) — never rewr
 - 2026-09-24: **Phase 2 Ledger commit semantics** — active task energy draws are derived from Ledger commitment records for subsequent same-tick checks; the caller supplies only other planned draws. This prevents double counting and same-tick overcommitment without a separate ENERGY counter.
 - 2026-09-24: **Phase 2 Gate integrity** — the Gate returns an opaque, caller-stored survivor set and verifies its contents before ranking or fallback. Mutating a filtered candidate invalidates the set rather than allowing Utility to rank un-gated data. This is an in-process data-integrity check, not a security boundary against arbitrary memory tampering.
 - 2026-09-24: **Phase 2 range alignment** — scenario `BATTERY_CAPACITY_MJ` is restricted to `1..INT64_MAX`, matching the Ledger's signed mJ arithmetic range.
-- **Open, Phase 2 energy lifecycle**: After `ledger_release_rate` ends a task, should its energy draw remain committed until a fresh SOC/horizon-budget update reflects that draw? Immediate release can fund a second task from the unchanged budget. Awaiting an explicit rule before marking Phase 2 complete.
+- 2026-09-24: **Resolved Phase 2 energy lifecycle** — `ledger_release_rate` leaves the completed task's ENERGY draw committed until a fresh SOC/horizon-budget update reflects it. This prevents reuse of an unchanged budget.
 - 2026-09-24: **Provisional, non-binding Phase 2 self-cost** — 50,534 ns process CPU time per static steps 3–6 pass, averaged over 2,000 runs of eight hand-constructed tasks on WSL Ubuntu with GCC at the Makefile's default optimization level. Measured with `CLOCK_PROCESS_CPUTIME_ID`; each timed pass includes mode generation, Gate, Utility/fallback, and Ledger commits, plus timing-call overhead. It excludes prediction and is not a cap. The provisional CPU and energy self-cost reservations are both `0` until Phase 3's final measurement and modeled energy assumption.
+- 2026-09-24: **Phase 3 time scale and one-shot model** — preserve `normal_orbit.scn`'s nanosecond fixture. A real-clock run maps one `STEP_NS` to one second by default; `--tick-ms` permits a shorter CI/demo interval, while virtual tests run without wall-time pacing. Each task is committed once; its reservation and assumption snapshot persist, and later cycles consider only pending tasks. Execution progress remains Phase 5 scope.
+- 2026-09-24: **Sanitizer smoke pacing** — plain `make test` uses a 1 ms real tick; the ASan/UBSan demo smoke uses 100 ms because instrumentation raised one observed calibration maximum above 1 ms. The governor rejects a tick interval whose cap exceeds its available CPU budget, rather than silently disabling that safety check.
+- 2026-09-24: **Phase 3 conservative energy integration** — use the minimum of current SOC and each pending task's horizon SOC forecast for one cycle-wide ENERGY budget. Predicted harvest and other planned draws are zero in this MVP because current draw in mA lacks a voltage contract for mJ conversion; the SOC forecast already reflects net battery trend. Demo thermal ceilings are configuration at `100000 mC` per subsystem with zero additional safety margin; they are not new scenario directives.
+- 2026-09-24: **Phase 3 self-cost policy** — measure 2,000 full decision passes with `CLOCK_PROCESS_CPUTIME_ID`, including prediction update; hard cap = observed maximum + 25% + 1,000 ns, checked at each pending-task boundary and before shadow commit. Reserve the cap-sized CPU share and modeled ENERGY draw, assuming `2.0 W` active power (a modeling assumption, not a hardware measurement). A representative WSL Ubuntu run with a 1 ms CI tick measured a 145,400 ns maximum, set a 182,750 ns cap, reserved 19% CPU and 1 modeled mJ; the exact cap is recalibrated at each run. The prior Phase 2 value is not binding.
 
 ## 19. Repository & Disclosure Notes
 

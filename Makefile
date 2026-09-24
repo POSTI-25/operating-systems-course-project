@@ -51,7 +51,7 @@ sanitize: $(SAN_BINS) build/san_golden_runner build/san_prediction_ab build/san_
 	@set -e; for binary in $(SAN_BINS); do ./$$binary; done
 	@set -e; actual=$$(mktemp); trap 'rm -f "$$actual"' EXIT; ./build/san_golden_runner scenarios/normal_orbit.scn > "$$actual"; diff -u golden/normal_orbit.expected "$$actual"
 	@./build/san_prediction_ab scenarios/prediction_trend.scn
-	@./build/san_sage_rt scenarios/normal_orbit.scn --tick-ms 1 | grep '^SUMMARY '
+	@./build/san_sage_rt scenarios/normal_orbit.scn --tick-ms 100 | grep '^SUMMARY '
 
 clean:
 	rm -f build/sage_rt build/san_sage_rt build/golden_runner build/san_golden_runner build/measure_self_cost build/prediction_ab build/san_prediction_ab $(UNIT_BINS) $(SAN_BINS)

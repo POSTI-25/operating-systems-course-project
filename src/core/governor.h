@@ -49,6 +49,8 @@ typedef struct {
     bool has_frame;
     uint64_t last_cycle_cpu_ns;
     uint64_t pending_prediction_cpu_ns;
+    uint64_t pending_prediction_wall_ns;
+    uint64_t last_prediction_wall_ns;
 } Governor;
 
 typedef enum {

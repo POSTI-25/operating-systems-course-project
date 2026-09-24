@@ -105,10 +105,12 @@ static void overrun_discards_shadow_commitments(void)
     ASSERT_EQ_INT(GOVERNOR_CYCLE_OVERRUN,
                   governor_cycle(&governor, 0, false));
     ASSERT_EQ_INT(0, governor_commitment_count(&governor));
+    ASSERT_EQ_INT(0, governor.accuracy_tracker.count);
     config.test_injected_cpu_ns_per_task = 0;
     governor.config = config;
     ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
     ASSERT_EQ_INT(2, governor_commitment_count(&governor));
+    ASSERT_EQ_INT(2, governor.accuracy_tracker.count);
 }
 
 static void calibration_sets_hard_cap_and_modeled_ledger_reserve(void)

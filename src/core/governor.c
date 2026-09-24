@@ -23,6 +23,19 @@ static bool process_cpu_time_ns(uint64_t *value)
     return true;
 }
 
+static bool monotonic_time_ns(uint64_t *value)
+{
+    struct timespec stamp;
+    if (value == NULL || clock_gettime(CLOCK_MONOTONIC, &stamp) != 0 ||
+        stamp.tv_sec < 0 || stamp.tv_nsec < 0 ||
+        (uint64_t)stamp.tv_sec >
+        (UINT64_MAX - (uint64_t)stamp.tv_nsec) / UINT64_C(1000000000))
+        return false;
+    *value = (uint64_t)stamp.tv_sec * UINT64_C(1000000000) +
+        (uint64_t)stamp.tv_nsec;
+    return true;
+}
+
 bool governor_init(Governor *governor, const Scenario *scenario,
                    const GovernorConfig *config)
 {
@@ -64,15 +77,22 @@ bool governor_observe_at(Governor *governor, const TelemetryFrame *frame,
 {
     uint64_t start_cpu;
     uint64_t end_cpu;
+    uint64_t start_wall;
+    uint64_t end_wall;
     uint64_t added;
-    if (!process_cpu_time_ns(&start_cpu)) return false;
+    if (!monotonic_time_ns(&start_wall) ||
+        !process_cpu_time_ns(&start_cpu)) return false;
     if (governor == NULL || frame == NULL ||
         !prediction_tracker_observe(&governor->accuracy_tracker, now_ns, frame,
             governor->accuracy_events, PREDICTION_MAX_PENDING,
             &governor->accuracy_count) ||
         !prediction_engine_update(&governor->prediction, frame)) return false;
-    if (!process_cpu_time_ns(&end_cpu) || end_cpu < start_cpu)
+    if (!process_cpu_time_ns(&end_cpu) || end_cpu < start_cpu ||
+        !monotonic_time_ns(&end_wall) || end_wall < start_wall)
         return false;
+    if (end_wall - start_wall > UINT64_MAX -
+        governor->pending_prediction_wall_ns) return false;
+    governor->pending_prediction_wall_ns += end_wall - start_wall;
     added = end_cpu - start_cpu;
     if (governor->config.test_injected_prediction_cpu_ns > UINT64_MAX - added)
         return false;
@@ -95,7 +115,8 @@ static bool predicted_for_task(const Governor *governor, const Task *task,
     return true;
 }
 
-static bool select_task(Governor *governor, GovernorPlan *shadow, size_t index,
+static bool select_task(Governor *governor, GovernorPlan *shadow,
+                        PredictionTracker *tracker, size_t index,
                         uint64_t now_ns)
 {
     const Task *task = &governor->scenario->tasks.items[index];
@@ -113,7 +134,7 @@ static bool select_task(Governor *governor, GovernorPlan *shadow, size_t index,
     if (!predicted_for_task(governor, task, now_ns, &forecast, &horizon_end) ||
         forecast.battery_soc_mV_pct.value < 0 ||
         forecast.battery_soc_mV_pct.value > 1000) return false;
-    if (!prediction_tracker_add(&governor->accuracy_tracker, task->task_id,
+    if (!prediction_tracker_add(tracker, task->task_id,
                                  now_ns, horizon_end, &forecast)) return false;
     count = mode_generator_generate(task, &forecast, candidates, SAGE_MAX_CANDIDATES);
     if (count == 0) return false;
@@ -173,6 +194,7 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
                                     bool fault_escalation)
 {
     GovernorPlan shadow;
+    PredictionTracker shadow_tracker;
     size_t i;
     size_t order[SAGE_MAX_TASKS];
     size_t processed = 0;
@@ -185,7 +207,10 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
     if (!process_cpu_time_ns(&start_cpu)) return GOVERNOR_CYCLE_ERROR;
     prediction_cpu = governor->pending_prediction_cpu_ns;
     governor->pending_prediction_cpu_ns = 0;
+    governor->last_prediction_wall_ns = governor->pending_prediction_wall_ns;
+    governor->pending_prediction_wall_ns = 0;
     shadow = governor->plan;
+    shadow_tracker = governor->accuracy_tracker;
     if (!ledger_set_rate_capacities(&shadow.ledger,
             (uint16_t)governor->latest.cpu_avail_pct.value,
             governor->latest.comm_window_open.value != 0 ? 100U : 0U))
@@ -227,7 +252,7 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
         size_t index = order[i];
         if (shadow.pending[index]) {
             uint64_t injected;
-            if (!select_task(governor, &shadow, index, now_ns) ||
+            if (!select_task(governor, &shadow, &shadow_tracker, index, now_ns) ||
                 !process_cpu_time_ns(&end_cpu) || end_cpu < start_cpu)
                 return GOVERNOR_CYCLE_ERROR;
             ++processed;
@@ -251,6 +276,7 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
     if (governor->last_cycle_cpu_ns > governor->config.self_cost_cap_ns)
         return GOVERNOR_CYCLE_OVERRUN;
     governor->plan = shadow;
+    governor->accuracy_tracker = shadow_tracker;
     return GOVERNOR_CYCLE_OK;
 }
 
@@ -298,7 +324,9 @@ static bool record_tick(Governor *governor, SimulatorPipe *stream,
         return false;
     metric = &stats->metrics[stats->metric_count++];
     metric->sim_time_ns = sim_time_ns;
-    metric->cycle_time_ns = end - start;
+    if (governor->last_prediction_wall_ns > UINT64_MAX - (end - start))
+        return false;
+    metric->cycle_time_ns = end - start + governor->last_prediction_wall_ns;
     metric->cpu_time_ns = governor->last_cycle_cpu_ns;
     metric->tick_jitter_ns = stream->paced ?
         (start >= deadline ? (int64_t)(start - deadline) :
