@@ -20,6 +20,8 @@ static void full_orbit_and_fault_event_run_over_pipe(void)
     ASSERT_TRUE(input != NULL);
     ASSERT_TRUE(scenario_load_file(input, &scenario, error, sizeof(error)));
     fclose(input);
+    scenario.tasks.items[0].nominal_exec_ns = 6;
+    scenario.tasks.items[0].deadline_ns = 30;
     scenario.fault_count = 1;
     scenario.faults[0].time_ns = 3;
     scenario.faults[0].set_mask = 0x04U;

@@ -214,6 +214,8 @@ static void observed_invalidation_releases_and_restores_through_gate(void)
     LedgerDimension energy;
     size_t mode;
     setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 12;
+    scenario.tasks.items[0].deadline_ns = 30;
     for (mode = 0; mode < TASK_EXECUTING_MODE_COUNT; ++mode) {
         scenario.tasks.items[0].modes[mode].resource_demand.cpu_pct = 10;
         scenario.tasks.items[0].modes[mode].energy_cost_mJ = 100;
@@ -279,6 +281,7 @@ static void false_predicted_risk_restores_at_horizon_via_gate(void)
     TelemetryFrame frame;
     size_t mode;
     setup_scenario(&scenario, 790);
+    scenario.tasks.items[0].nominal_exec_ns = 4;
     for (mode = 0; mode < TASK_EXECUTING_MODE_COUNT; ++mode)
         scenario.tasks.items[0].modes[mode].energy_cost_mJ = 100;
     ASSERT_TRUE(governor_init(&governor, &scenario, &config));
@@ -293,16 +296,16 @@ static void false_predicted_risk_restores_at_horizon_via_gate(void)
     ASSERT_TRUE(!governor_commitment_active(&governor, 0));
     ASSERT_EQ_INT(INVALIDATION_PREDICTED_RISK,
                   governor_revalidation_state_at(&governor, 0)->record.cause_type);
-    ASSERT_EQ_INT(6,
+    ASSERT_EQ_INT(8,
                   governor_revalidation_state_at(&governor, 0)->record.forecast_horizon_end);
     frame.battery_soc_mV_pct.value = 800;
     frame.battery_soc_mV_pct.timestamp_ns = 4;
     ASSERT_TRUE(governor_observe_at(&governor, &frame, 4));
     ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 4, false));
     ASSERT_TRUE(!governor_commitment_active(&governor, 0));
-    frame.battery_soc_mV_pct.timestamp_ns = 6;
-    ASSERT_TRUE(governor_observe_at(&governor, &frame, 6));
-    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 6, false));
+    frame.battery_soc_mV_pct.timestamp_ns = 8;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 8));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 8, false));
     ASSERT_TRUE(governor_commitment_active(&governor, 0));
 }
 
@@ -334,6 +337,7 @@ static void emergency_safe_mode_discards_same_cycle_normal_dispatch(void)
     scenario.tasks.items[0].criticality_class = 0;
     scenario.tasks.items[0].primary_subsystem = SUBSYSTEM_ADCS;
     scenario.tasks.items[0].deadline_ns = 30;
+    scenario.tasks.items[0].nominal_exec_ns = 8;
     scenario.tasks.items[1] = scenario.tasks.items[0];
     scenario.tasks.items[1].task_id = 2;
     scenario.tasks.items[1].criticality_class = 1;
@@ -370,6 +374,8 @@ static void clear_count_alone_cannot_restore_without_gate_pass(void)
     TelemetryFrame frame;
     uint64_t tick;
     setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 10;
+    scenario.tasks.items[0].deadline_ns = 30;
     ASSERT_TRUE(governor_init(&governor, &scenario, &config));
     frame = scenario.initial;
     ASSERT_TRUE(governor_observe_at(&governor, &frame, 0));
@@ -403,6 +409,7 @@ static void aggregate_energy_deficit_releases_lowest_priority_first(void)
     size_t task_index;
     size_t mode;
     setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 6;
     scenario.tasks.count = 2;
     scenario.tasks.items[1] = scenario.tasks.items[0];
     scenario.tasks.items[1].task_id = 2;
@@ -437,6 +444,7 @@ static void held_energy_requires_fresh_quality_ok_soc_sample(void)
     LedgerDimension energy;
     size_t mode;
     setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 4;
     for (mode = 0; mode < TASK_EXECUTING_MODE_COUNT; ++mode)
         scenario.tasks.items[0].modes[mode].energy_cost_mJ = 100;
     ASSERT_TRUE(governor_init(&governor, &scenario, &config));
@@ -497,6 +505,7 @@ static void emergency_cancels_same_cycle_restoration(void)
     scenario.tasks.items[0].criticality_class = 0;
     scenario.tasks.items[0].primary_subsystem = SUBSYSTEM_ADCS;
     scenario.tasks.items[0].deadline_ns = 30;
+    scenario.tasks.items[0].nominal_exec_ns = 12;
     scenario.tasks.items[1] = scenario.tasks.items[0];
     scenario.tasks.items[1].task_id = 2;
     scenario.tasks.items[1].criticality_class = 1;
@@ -536,6 +545,7 @@ static void restoration_waits_for_soc_refresh_without_cycle_error(void)
     size_t mode;
     setup_scenario(&scenario, 700);
     scenario.tasks.items[0].deadline_ns = 30;
+    scenario.tasks.items[0].nominal_exec_ns = 12;
     for (mode = 0; mode < TASK_EXECUTING_MODE_COUNT; ++mode)
         scenario.tasks.items[0].modes[mode].energy_cost_mJ = 100;
     ASSERT_TRUE(governor_init(&governor, &scenario, &config));
@@ -567,6 +577,7 @@ static void aggregate_cpu_deficit_sheds_newest_within_class(void)
     TelemetryFrame frame;
     size_t mode;
     setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 6;
     scenario.tasks.count = 2;
     scenario.tasks.items[1] = scenario.tasks.items[0];
     scenario.tasks.items[1].task_id = 2;
@@ -583,6 +594,98 @@ static void aggregate_cpu_deficit_sheds_newest_within_class(void)
     ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 2, false));
     ASSERT_TRUE(governor_commitment_active(&governor, 0));
     ASSERT_TRUE(!governor_commitment_active(&governor, 1));
+}
+
+static void execution_pauses_on_fault_and_resumes_remaining_work(void)
+{
+    static Scenario scenario;
+    Governor governor;
+    GovernorConfig config = setup_config(false);
+    TelemetryFrame frame;
+    LedgerDimension cpu;
+    LedgerDimension energy;
+    size_t mode;
+    setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 6;
+    scenario.tasks.items[0].deadline_ns = 30;
+    for (mode = 0; mode < TASK_EXECUTING_MODE_COUNT; ++mode) {
+        scenario.tasks.items[0].modes[mode].resource_demand.cpu_pct = 10;
+        scenario.tasks.items[0].modes[mode].energy_cost_mJ = 100;
+    }
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    frame = scenario.initial;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 2));
+    governor.config.self_cost_cap_ns = 1;
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OVERRUN, governor_cycle(&governor, 2, false));
+    ASSERT_EQ_INT(6, governor_execution_at(&governor, 0)->remaining_ns);
+    governor.config.self_cost_cap_ns = UINT64_MAX;
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 2, false));
+    ASSERT_EQ_INT(4, governor_execution_at(&governor, 0)->remaining_ns);
+    frame.fault_flags.value = UINT32_C(1) << SUBSYSTEM_PAYLOAD;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 3));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK,
+                  governor_cycle_with_fault_mask(&governor, 3,
+                      UINT32_C(1) << SUBSYSTEM_PAYLOAD));
+    ASSERT_EQ_INT(EXECUTION_PAUSED, governor_execution_at(&governor, 0)->phase);
+    ASSERT_EQ_INT(3, governor_execution_at(&governor, 0)->remaining_ns);
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_CPU, &cpu));
+    ASSERT_EQ_INT(0, cpu.committed);
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_ENERGY, &energy));
+    ASSERT_EQ_INT(100, energy.committed);
+    frame.fault_flags.value = 0;
+    frame.battery_soc_mV_pct.timestamp_ns = 8;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 8));
+    governor.config.self_cost_cap_ns = 1;
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OVERRUN, governor_cycle(&governor, 8, false));
+    ASSERT_EQ_INT(3, governor_execution_at(&governor, 0)->remaining_ns);
+    governor.config.self_cost_cap_ns = UINT64_MAX;
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 8, false));
+    ASSERT_EQ_INT(3, governor_execution_at(&governor, 0)->remaining_ns);
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_ENERGY, &energy));
+    ASSERT_EQ_INT(0, energy.committed);
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 10));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 10, false));
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 12));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 12, false));
+    ASSERT_EQ_INT(EXECUTION_RUNNING, governor_execution_at(&governor, 0)->phase);
+    ASSERT_EQ_INT(3, governor_execution_at(&governor, 0)->remaining_ns);
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 16));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 16, false));
+    ASSERT_EQ_INT(EXECUTION_COMPLETE, governor_execution_at(&governor, 0)->phase);
+    ASSERT_EQ_INT(15, governor_execution_at(&governor, 0)->completed_ns);
+    ASSERT_EQ_INT(900, governor_execution_at(&governor, 0)->delivered_value);
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_CPU, &cpu));
+    ASSERT_EQ_INT(0, cpu.committed);
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_ENERGY, &energy));
+    ASSERT_EQ_INT(100, energy.committed);
+    frame.battery_soc_mV_pct.timestamp_ns = 18;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 18));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 18, false));
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_ENERGY, &energy));
+    ASSERT_EQ_INT(0, energy.committed);
+}
+
+static void completion_at_fault_instant_wins(void)
+{
+    static Scenario scenario;
+    Governor governor;
+    GovernorConfig config = setup_config(false);
+    TelemetryFrame frame;
+    setup_scenario(&scenario, 700);
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    frame = scenario.initial;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    frame.fault_flags.value = UINT32_C(1) << SUBSYSTEM_PAYLOAD;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 2));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK,
+                  governor_cycle_with_fault_mask(&governor, 2,
+                      UINT32_C(1) << SUBSYSTEM_PAYLOAD));
+    ASSERT_EQ_INT(EXECUTION_COMPLETE, governor_execution_at(&governor, 0)->phase);
+    ASSERT_EQ_INT(2, governor_execution_at(&governor, 0)->completed_ns);
+    ASSERT_TRUE(!governor_revalidation_state_at(&governor, 0)->invalid);
 }
 
 int main(void)
@@ -606,5 +709,7 @@ int main(void)
     RUN_TEST(emergency_cancels_same_cycle_restoration);
     RUN_TEST(restoration_waits_for_soc_refresh_without_cycle_error);
     RUN_TEST(aggregate_cpu_deficit_sheds_newest_within_class);
+    RUN_TEST(execution_pauses_on_fault_and_resumes_remaining_work);
+    RUN_TEST(completion_at_fault_instant_wins);
     return test_failures != 0;
 }

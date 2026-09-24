@@ -7,6 +7,7 @@
 #include "utility.h"
 #include "sim/scenario.h"
 #include "platform/platform_ipc.h"
+#include "adapter/execution_adapter.h"
 #include <stdio.h>
 
 #define GOVERNOR_MAX_METRICS 10000
@@ -37,6 +38,7 @@ typedef struct {
     bool pending[SAGE_MAX_TASKS];
     bool commitment_active[SAGE_MAX_TASKS];
     RevalidationState revalidation[SAGE_MAX_TASKS];
+    ExecutionState execution[SAGE_MAX_TASKS];
     bool emergency_safe_mode;
     uint32_t emergency_task_id;
     uint64_t energy_refresh_epoch;
@@ -113,6 +115,8 @@ const Commitment *governor_commitment_at(const Governor *governor, size_t index)
 bool governor_commitment_active(const Governor *governor, size_t task_index);
 const RevalidationState *governor_revalidation_state_at(const Governor *governor,
                                                         size_t task_index);
+const ExecutionState *governor_execution_at(const Governor *governor,
+                                            size_t task_index);
 bool governor_emergency_safe_mode(const Governor *governor);
 size_t governor_accuracy_count(const Governor *governor);
 const PredictionAccuracyEvent *governor_accuracy_at(const Governor *governor,

@@ -121,7 +121,8 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
                         PredictionTracker *tracker, size_t index,
                         uint64_t now_ns, bool permit_commit)
 {
-    const Task *task = &governor->scenario->tasks.items[index];
+    Task task_view = governor->scenario->tasks.items[index];
+    const Task *task = &task_view;
     TelemetryFrame forecast;
     uint64_t horizon_end;
     Candidate candidates[SAGE_MAX_CANDIDATES];
@@ -133,6 +134,8 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
     SelectionResult selected = {0};
     LedgerDimension dimension;
     int i;
+    if (shadow->execution[index].phase == EXECUTION_PAUSED)
+        task_view.nominal_exec_ns = shadow->execution[index].remaining_ns;
     if (!predicted_for_task(governor, task, now_ns, &forecast, &horizon_end) ||
         forecast.battery_soc_mV_pct.value < 0 ||
         forecast.battery_soc_mV_pct.value > 1000) return false;
@@ -205,8 +208,12 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
         shadow->revalidation[index].has_observed_baseline = true;
         shadow->commitment_active[index] = true;
         shadow->pending[index] = false;
+        if (shadow->execution[index].phase == EXECUTION_PENDING &&
+            !execution_start(&shadow->execution[index], task,
+                             selected.selected.mode, now_ns)) return false;
     } else if (selected.outcome == SELECTION_REJECTED && permit_commit) {
         shadow->pending[index] = false;
+        shadow->execution[index].phase = EXECUTION_REJECTED;
     }
     return true;
 }
@@ -317,6 +324,8 @@ static bool trim_overcommitted(Governor *governor, GovernorPlan *plan,
             }
         }
         if (victim == governor->scenario->tasks.count) return true;
+        if (!execution_pause(&plan->execution[victim],
+                &governor->scenario->tasks.items[victim], now_ns)) return false;
         if (!revalidation_force_capacity_invalidation(&plan->revalidation[victim],
                 &governor->scenario->tasks.items[victim],
                 plan->commitments[victim_slot].mode, now_ns) ||
@@ -364,6 +373,19 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
     initial_commitment_count = shadow.commitment_count;
     shadow_tracker = governor->accuracy_tracker;
     shadow.emergency_safe_mode = false;
+    for (i = 0; i < governor->scenario->tasks.count; ++i) {
+        bool completed = false;
+        const Task *task = &governor->scenario->tasks.items[i];
+        if (shadow.execution[i].phase != EXECUTION_RUNNING) continue;
+        if (!execution_advance(&shadow.execution[i], task, now_ns,
+                               &completed)) return GOVERNOR_CYCLE_ERROR;
+        if (completed) {
+            if (!ledger_release_rate(&shadow.ledger, task->task_id))
+                return GOVERNOR_CYCLE_ERROR;
+            (void)ledger_release_stock(&shadow.ledger, task->task_id);
+            shadow.commitment_active[i] = false;
+        }
+    }
     if (!ledger_set_telemetry_capacities(&shadow.ledger,
             governor->latest.cpu_avail_pct.quality == TELEMETRY_QUALITY_OK &&
                 governor->latest.cpu_avail_pct.value >= 0 &&
@@ -456,7 +478,9 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
         size_t slot;
         int subsystem;
         const Task *task = &governor->scenario->tasks.items[i];
-        if (shadow.pending[i] ||
+        if (shadow.execution[i].phase == EXECUTION_COMPLETE ||
+            shadow.execution[i].phase == EXECUTION_REJECTED ||
+            shadow.pending[i] ||
             (!shadow.commitment_active[i] && !shadow.revalidation[i].invalid))
             continue;
         for (slot = 0; slot < shadow.commitment_count; ++slot)
@@ -483,6 +507,8 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
         event = revalidation_step(&shadow.revalidation[i], &check);
         if (event == REVALIDATION_ERROR) return GOVERNOR_CYCLE_ERROR;
         if (event == REVALIDATION_INVALIDATE) {
+            if (!execution_pause(&shadow.execution[i], task, now_ns))
+                return GOVERNOR_CYCLE_ERROR;
             if (!ledger_release_rate(&shadow.ledger, task->task_id))
                 return GOVERNOR_CYCLE_ERROR;
             (void)ledger_release_stock(&shadow.ledger, task->task_id);
@@ -495,6 +521,10 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
             if (shadow.commitment_active[i] &&
                 !revalidation_complete_restore(&shadow.revalidation[i],
                     now_ns, governor->scenario->step_ns))
+                return GOVERNOR_CYCLE_ERROR;
+            if (shadow.commitment_active[i] &&
+                !execution_resume(&shadow.execution[i],
+                    shadow.commitments[slot].mode, now_ns))
                 return GOVERNOR_CYCLE_ERROR;
         }
     }
@@ -518,6 +548,7 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
             shadow.pending[i] = before.pending[i];
             shadow.commitment_active[i] = false;
             shadow.revalidation[i] = before.revalidation[i];
+            shadow.execution[i] = before.execution[i];
             for (slot = 0; slot < shadow.commitment_count; ++slot)
                 if (shadow.commitments[slot].task_id == task_id) {
                     if (slot < initial_commitment_count)
@@ -558,6 +589,14 @@ const RevalidationState *governor_revalidation_state_at(const Governor *governor
     return governor == NULL || governor->scenario == NULL ||
         task_index >= governor->scenario->tasks.count ? NULL :
         &governor->plan.revalidation[task_index];
+}
+
+const ExecutionState *governor_execution_at(const Governor *governor,
+                                            size_t task_index)
+{
+    return governor == NULL || governor->scenario == NULL ||
+        task_index >= governor->scenario->tasks.count ? NULL :
+        &governor->plan.execution[task_index];
 }
 
 bool governor_emergency_safe_mode(const Governor *governor)
