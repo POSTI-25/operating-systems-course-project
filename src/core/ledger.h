@@ -37,6 +37,7 @@ typedef struct {
     bool in_use;
     bool rate_active;
     bool stock_held;
+    bool energy_pending;
     uint32_t task_id;
     ResourceDemand demand;
     uint64_t energy_cost_mJ;
@@ -47,10 +48,14 @@ typedef struct {
     LedgerReservation reservations[SAGE_MAX_TASKS];
     int64_t memory_committed;
     int64_t storage_committed;
+    int64_t self_cpu_pct;
+    int64_t self_energy_mJ;
 } Ledger;
 
 bool ledger_init(Ledger *ledger, const LedgerConfig *config);
 bool ledger_set_rate_capacities(Ledger *ledger, uint16_t cpu_pct, uint16_t comm_pct);
+bool ledger_set_self_cost(Ledger *ledger, uint16_t cpu_pct,
+                          uint64_t energy_mJ);
 bool ledger_update_energy(Ledger *ledger, uint16_t soc_permille,
                           uint64_t predicted_harvest_mJ,
                           uint64_t other_planned_draws_mJ);

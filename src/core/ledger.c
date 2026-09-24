@@ -48,6 +48,29 @@ bool ledger_set_rate_capacities(Ledger *ledger, uint16_t cpu_pct, uint16_t comm_
     return true;
 }
 
+bool ledger_set_self_cost(Ledger *ledger, uint16_t cpu_pct,
+                          uint64_t energy_mJ)
+{
+    int64_t previous_cpu;
+    int64_t previous_energy;
+    LedgerDimension state;
+    if (ledger == NULL || cpu_pct > 100 || energy_mJ > INT64_MAX)
+        return false;
+    previous_cpu = ledger->self_cpu_pct;
+    previous_energy = ledger->self_energy_mJ;
+    ledger->self_cpu_pct = (int64_t)cpu_pct;
+    ledger->self_energy_mJ = (int64_t)energy_mJ;
+    if (!ledger_query(ledger, LEDGER_CPU, &state) ||
+        state.committed > state.capacity ||
+        !ledger_query(ledger, LEDGER_ENERGY, &state) ||
+        state.committed > state.capacity) {
+        ledger->self_cpu_pct = previous_cpu;
+        ledger->self_energy_mJ = previous_energy;
+        return false;
+    }
+    return true;
+}
+
 bool ledger_update_energy(Ledger *ledger, uint16_t soc_permille,
                           uint64_t predicted_harvest_mJ,
                           uint64_t other_planned_draws_mJ)
@@ -57,6 +80,7 @@ bool ledger_update_energy(Ledger *ledger, uint16_t soc_permille,
     int64_t available;
     int64_t with_harvest;
     int64_t budget;
+    size_t i;
     if (ledger == NULL || soc_permille > 1000 ||
         predicted_harvest_mJ > INT64_MAX || other_planned_draws_mJ > INT64_MAX)
         return false;
@@ -67,6 +91,13 @@ bool ledger_update_energy(Ledger *ledger, uint16_t soc_permille,
         !checked_sub(with_harvest, (int64_t)other_planned_draws_mJ, &budget))
         return false;
     ledger->config.capacity[LEDGER_ENERGY] = budget;
+    for (i = 0; i < SAGE_MAX_TASKS; ++i) {
+        LedgerReservation *entry = &ledger->reservations[i];
+        if (entry->in_use && !entry->rate_active) {
+            entry->energy_pending = false;
+            if (!entry->stock_held) entry->in_use = false;
+        }
+    }
     return true;
 }
 
@@ -77,6 +108,8 @@ bool ledger_query(const Ledger *ledger, LedgerDimensionId id, LedgerDimension *o
     int64_t after_reserve;
     if (ledger == NULL || out == NULL || id < LEDGER_CPU ||
         id >= LEDGER_DIMENSION_COUNT) return false;
+    if (id == LEDGER_CPU) committed = ledger->self_cpu_pct;
+    else if (id == LEDGER_ENERGY) committed = ledger->self_energy_mJ;
     out->capacity = ledger->config.capacity[id];
     out->protected_reserve = ledger->config.protected_reserve[id];
     if (id == LEDGER_MEMORY) committed = ledger->memory_committed;
@@ -85,7 +118,9 @@ bool ledger_query(const Ledger *ledger, LedgerDimensionId id, LedgerDimension *o
         for (i = 0; i < SAGE_MAX_TASKS; ++i) {
             const LedgerReservation *entry = &ledger->reservations[i];
             int64_t demand = 0;
-            if (!entry->in_use || !entry->rate_active) continue;
+            if (!entry->in_use ||
+                (id == LEDGER_ENERGY ? !entry->energy_pending : !entry->rate_active))
+                continue;
             switch (id) {
             case LEDGER_CPU: demand = (int64_t)entry->demand.cpu_pct; break;
             case LEDGER_ENERGY:
@@ -167,6 +202,7 @@ bool ledger_commit(Ledger *ledger, uint32_t task_id, uint8_t criticality_class,
     ledger->reservations[vacant] = (LedgerReservation){
         .in_use = true, .rate_active = true,
         .stock_held = demand.mem_KB != 0 || demand.storage_KB != 0,
+        .energy_pending = energy_cost_mJ != 0,
         .task_id = task_id, .demand = demand, .energy_cost_mJ = energy_cost_mJ
     };
     ledger->memory_committed += (int64_t)demand.mem_KB;
@@ -190,7 +226,7 @@ bool ledger_release_rate(Ledger *ledger, uint32_t task_id)
     LedgerReservation *entry = find_reservation(ledger, task_id);
     if (entry == NULL || !entry->rate_active) return false;
     entry->rate_active = false;
-    if (!entry->stock_held) entry->in_use = false;
+    if (!entry->stock_held && !entry->energy_pending) entry->in_use = false;
     return true;
 }
 
@@ -201,6 +237,6 @@ bool ledger_release_stock(Ledger *ledger, uint32_t task_id)
     ledger->memory_committed -= (int64_t)entry->demand.mem_KB;
     ledger->storage_committed -= (int64_t)entry->demand.storage_KB;
     entry->stock_held = false;
-    if (!entry->rate_active) entry->in_use = false;
+    if (!entry->rate_active && !entry->energy_pending) entry->in_use = false;
     return true;
 }

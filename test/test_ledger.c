@@ -73,7 +73,12 @@ static void energy_budget_includes_active_task_draws(void)
     ASSERT_EQ_INT(25000, state.free);
     ASSERT_TRUE(ledger_release_rate(&ledger, 1));
     ASSERT_TRUE(ledger_query(&ledger, LEDGER_ENERGY, &state));
+    ASSERT_EQ_INT(30000, state.committed);
+    ASSERT_TRUE(!ledger_commit(&ledger, 2, 1, zero, 30000));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 800, 5000, 10000));
+    ASSERT_TRUE(ledger_query(&ledger, LEDGER_ENERGY, &state));
     ASSERT_EQ_INT(0, state.committed);
+    ASSERT_TRUE(ledger_commit(&ledger, 2, 1, zero, 30000));
 }
 
 static void sensor_protected_bits_need_class_zero(void)
@@ -100,6 +105,22 @@ static void energy_protected_pool_is_available_only_to_class_zero(void)
     ASSERT_TRUE(ledger_commit(&ledger, 1, 0, zero, 55000));
 }
 
+static void self_cost_is_committed_not_class_zero_protected_capacity(void)
+{
+    Ledger ledger;
+    LedgerConfig setup = config();
+    LedgerDimension state;
+    ResourceDemand demand = { .cpu_pct = 96 };
+    ASSERT_TRUE(ledger_init(&ledger, &setup));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 800, 0, 0));
+    ASSERT_TRUE(ledger_set_self_cost(&ledger, 5, 1000));
+    ASSERT_TRUE(ledger_query(&ledger, LEDGER_CPU, &state));
+    ASSERT_EQ_INT(5, state.committed);
+    ASSERT_TRUE(ledger_query(&ledger, LEDGER_ENERGY, &state));
+    ASSERT_EQ_INT(1000, state.committed);
+    ASSERT_TRUE(!ledger_commit(&ledger, 1, 0, demand, 0));
+}
+
 int main(void)
 {
     RUN_TEST(commit_itself_protects_class_zero_pool);
@@ -107,5 +128,6 @@ int main(void)
     RUN_TEST(energy_budget_includes_active_task_draws);
     RUN_TEST(sensor_protected_bits_need_class_zero);
     RUN_TEST(energy_protected_pool_is_available_only_to_class_zero);
+    RUN_TEST(self_cost_is_committed_not_class_zero_protected_capacity);
     return test_failures != 0;
 }
