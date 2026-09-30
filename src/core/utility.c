@@ -18,7 +18,7 @@ static double thermal_ratio(int32_t effect, int64_t margin)
 }
 
 static double candidate_score(const Candidate *candidate, const Task *task,
-                              const UtilityContext *context)
+                              const UtilityContext *context, uint8_t mask)
 {
     uint64_t deadline_ceiling = context->time_remaining_to_deadline_ns == 0 ?
         1 : context->time_remaining_to_deadline_ns;
@@ -39,12 +39,17 @@ static double candidate_score(const Candidate *candidate, const Task *task,
     if (part > pressure) pressure = part;
     part = clamp_ratio(demand->comm_pct, context->free_comm_pct);
     if (part > pressure) pressure = part;
+    if ((mask & UTILITY_TERM_FAULT) == 0U) fault_urgency = 0.0;
+    if ((mask & UTILITY_TERM_DEADLINE) == 0U) deadline_urgency = 0.0;
+    if ((mask & UTILITY_TERM_ENERGY) == 0U) energy_cost = 0.0;
+    if ((mask & UTILITY_TERM_THERMAL) == 0U) thermal_risk = 0.0;
+    if ((mask & UTILITY_TERM_RESOURCE) == 0U) pressure = 0.0;
     return (1.0 + fault_urgency + deadline_urgency) *
         (double)candidate->delivered_value - (energy_cost + thermal_risk + pressure);
 }
 
-bool utility_rank(const SurvivorSet *survivors, const Task *task,
-                  const UtilityContext *context, SelectionResult *out)
+static bool rank_masked(const SurvivorSet *survivors, const Task *task,
+                  const UtilityContext *context, uint8_t mask, SelectionResult *out)
 {
     size_t count;
     size_t i;
@@ -60,7 +65,7 @@ bool utility_rank(const SurvivorSet *survivors, const Task *task,
         if (!gate_survivor_at(survivors, i, &candidate) ||
             candidate.mode > MODE_DEGRADED || candidate.task_id != task->task_id)
             return false;
-        score = candidate_score(&candidate, task, context);
+        score = candidate_score(&candidate, task, context, mask);
         if (!found || score > out->utility_score ||
             (score == out->utility_score && candidate.mode < out->selected.mode)) {
             out->outcome = SELECTION_EXECUTING;
@@ -75,12 +80,25 @@ bool utility_rank(const SurvivorSet *survivors, const Task *task,
 bool utility_select(const SurvivorSet *survivors, const Task *task,
                     const UtilityContext *context, SelectionResult *out)
 {
+    return utility_select_masked(survivors, task, context, UTILITY_TERM_ALL, out);
+}
+
+bool utility_rank(const SurvivorSet *survivors, const Task *task,
+                  const UtilityContext *context, SelectionResult *out)
+{
+    return rank_masked(survivors, task, context, UTILITY_TERM_ALL, out);
+}
+
+bool utility_select_masked(const SurvivorSet *survivors, const Task *task,
+    const UtilityContext *context, uint8_t term_mask, SelectionResult *out)
+{
     bool future_window;
     if (survivors == NULL || !gate_survivor_valid(survivors) ||
-        task == NULL || context == NULL || out == NULL)
+        task == NULL || context == NULL || out == NULL ||
+        (term_mask & ~UTILITY_TERM_ALL) != 0)
         return false;
     if (gate_survivor_count(survivors) > 0)
-        return utility_rank(survivors, task, context, out);
+        return rank_masked(survivors, task, context, term_mask, out);
     memset(out, 0, sizeof(*out));
     out->selected.task_id = task->task_id;
     if (task->criticality_class == 0) {

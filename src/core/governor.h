@@ -13,6 +13,24 @@
 
 #define GOVERNOR_MAX_METRICS 10000
 
+typedef enum {
+    GOVERNOR_VARIANT_SAGE_FULL = 0,
+    GOVERNOR_VARIANT_FIXED_EDF,
+    GOVERNOR_VARIANT_GOMX_STYLE,
+    GOVERNOR_VARIANT_RANJBAR_STYLE
+} GovernorVariant;
+
+typedef struct {
+    uint8_t mode_mask;
+    uint8_t gate_mask;
+    uint8_t utility_term_mask;
+    uint8_t ledger_mask;
+    bool prediction_enabled;
+    bool immediate_fault_cycle;
+} GovernorVariantPolicy;
+
+bool governor_variant_policy(GovernorVariant variant, GovernorVariantPolicy *out);
+
 typedef struct {
     uint32_t task_id;
     Mode mode;
@@ -29,6 +47,7 @@ typedef struct {
     int64_t protected_reserve[LEDGER_DIMENSION_COUNT];
     uint16_t safety_margin_permille;
     bool prediction_enabled;
+    GovernorVariant variant;
     uint64_t test_injected_cpu_ns_per_task;
     uint64_t test_injected_prediction_cpu_ns;
 } GovernorConfig;

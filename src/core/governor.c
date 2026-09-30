@@ -10,6 +10,23 @@
 #include <time.h>
 #include <inttypes.h>
 
+bool governor_variant_policy(GovernorVariant variant, GovernorVariantPolicy *out)
+{
+    static const GovernorVariantPolicy policies[] = {
+        {0x1f, GATE_MASK_ALL, UTILITY_TERM_ALL, 0x3f, true, true},
+        {0x01, 0, 0, 0, false, false},
+        {0x09, GATE_MASK_SOC | GATE_MASK_DEADLINE,
+         UTILITY_TERM_DEADLINE | UTILITY_TERM_ENERGY, 0x02, false, false},
+        {0x1f, GATE_MASK_THERMAL | GATE_MASK_PROTECTED | GATE_MASK_DEADLINE,
+         UTILITY_TERM_FAULT | UTILITY_TERM_DEADLINE | UTILITY_TERM_THERMAL |
+         UTILITY_TERM_RESOURCE, 0x3d, false, true}
+    };
+    if (out == NULL || variant < GOVERNOR_VARIANT_SAGE_FULL ||
+        variant > GOVERNOR_VARIANT_RANJBAR_STYLE) return false;
+    *out = policies[variant];
+    return true;
+}
+
 static bool process_cpu_time_ns(uint64_t *value)
 {
     struct timespec stamp;
@@ -40,9 +57,11 @@ bool governor_init(Governor *governor, const Scenario *scenario,
                    const GovernorConfig *config)
 {
     LedgerConfig ledger_config = {0};
+    GovernorVariantPolicy policy;
     size_t i;
     if (governor == NULL || scenario == NULL || config == NULL ||
-        scenario->tasks.count > SAGE_MAX_TASKS || scenario->step_ns == 0)
+        scenario->tasks.count > SAGE_MAX_TASKS || scenario->step_ns == 0 ||
+        !governor_variant_policy(config->variant, &policy))
         return false;
     memset(governor, 0, sizeof(*governor));
     governor->scenario = scenario;
@@ -111,9 +130,12 @@ static bool predicted_for_task(const Governor *governor, const Task *task,
                                uint64_t now_ns, TelemetryFrame *forecast,
                                uint64_t *horizon_end_ns)
 {
+    GovernorVariantPolicy policy;
+    if (!governor_variant_policy(governor->config.variant, &policy)) return false;
     if (!prediction_engine_forecast(&governor->prediction, task->nominal_exec_ns,
                                     now_ns, forecast, horizon_end_ns)) return false;
-    if (!governor->config.prediction_enabled) *forecast = governor->latest;
+    if (!governor->config.prediction_enabled || !policy.prediction_enabled)
+        *forecast = governor->latest;
     return true;
 }
 
@@ -145,6 +167,10 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
     TelemetryFrame forecast;
     uint64_t horizon_end;
     Candidate candidates[SAGE_MAX_CANDIDATES];
+    Candidate enabled[SAGE_MAX_CANDIDATES];
+    size_t enabled_count = 0;
+    size_t evaluation_index = 0;
+    GovernorVariantPolicy policy;
     size_t count;
     GateContext gate = {0};
     GateFilterResult filtered;
@@ -153,6 +179,7 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
     SelectionResult selected = {0};
     LedgerDimension dimension;
     int i;
+    if (!governor_variant_policy(governor->config.variant, &policy)) return false;
     if (shadow->execution[index].phase == EXECUTION_PAUSED)
         task_view.nominal_exec_ns = shadow->execution[index].remaining_ns;
     if (!predicted_for_task(governor, task, now_ns, &forecast, &horizon_end) ||
@@ -175,21 +202,31 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
             temp >= limit ? -1 : limit - temp;
         utility.remaining_thermal_margin_mC[i] = gate.remaining_thermal_margin_mC[i];
     }
-    survivors = gate_filter(candidates, count, task, &gate, &filtered);
+    for (i = 0; i < (int)count; ++i)
+        if ((policy.mode_mask & (1U << (unsigned int)candidates[i].mode)) != 0U)
+            enabled[enabled_count++] = candidates[i];
+    survivors = gate_filter_masked(enabled, enabled_count, task, &gate,
+                                   policy.gate_mask, &filtered);
     if (survivors == NULL) return false;
     record->has_candidates = true;
     for (i = 0; i < (int)count; ++i) {
         CandidateLogEntry *entry = &record->candidates[i];
         entry->mode = candidates[i].mode;
-        entry->skip_mask = 0;
+        entry->skip_mask = (uint8_t)(GATE_MASK_ALL & ~policy.gate_mask);
+        entry->failed_predicate = GATE_PREDICATE_NONE;
+        if ((policy.mode_mask & (1U << (unsigned int)candidates[i].mode)) == 0U) {
+            entry->verdict = CANDIDATE_VERDICT_DISABLED_BY_VARIANT;
+            continue;
+        }
         if (candidates[i].mode >= MODE_DEFERRED) {
             entry->verdict = CANDIDATE_VERDICT_FALLBACK_ONLY;
             entry->failed_predicate = GATE_PREDICATE_NONE;
         } else {
-            entry->verdict = filtered.evaluations[i].passed ?
+            entry->verdict = filtered.evaluations[evaluation_index].passed ?
                 CANDIDATE_VERDICT_PASS : CANDIDATE_VERDICT_ELIMINATED;
-            entry->failed_predicate = filtered.evaluations[i].failed_predicate;
+            entry->failed_predicate = filtered.evaluations[evaluation_index].failed_predicate;
         }
+        ++evaluation_index;
     }
     utility.time_remaining_to_deadline_ns = now_ns < task->deadline_ns ?
         task->deadline_ns - now_ns : 0;
@@ -205,7 +242,8 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
     utility.free_storage_KB = dimension.free;
     if (!ledger_query(&shadow->ledger, LEDGER_COMM, &dimension)) return false;
     utility.free_comm_pct = dimension.free;
-    if (!utility_select(survivors, task, &utility, &selected)) return false;
+    if (!utility_select_masked(survivors, task, &utility,
+                               policy.utility_term_mask, &selected)) return false;
     if (selected.outcome == SELECTION_EMERGENCY_SAFE_MODE_REQUESTED) {
         shadow->emergency_safe_mode = true;
         shadow->emergency_task_id = task->task_id;
@@ -515,8 +553,16 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
     for (i = 0; i < governor->scenario->tasks.count; ++i) {
         size_t at = i;
         order[i] = i;
-        while (at > 0 && governor->scenario->tasks.items[order[at - 1]].criticality_class >
-                         governor->scenario->tasks.items[order[at]].criticality_class) {
+        while (at > 0) {
+            const Task *left = &governor->scenario->tasks.items[order[at - 1]];
+            const Task *right = &governor->scenario->tasks.items[order[at]];
+            bool follows = left->criticality_class > right->criticality_class;
+            if (left->criticality_class == right->criticality_class &&
+                governor->config.variant == GOVERNOR_VARIANT_FIXED_EDF)
+                follows = left->deadline_ns > right->deadline_ns ||
+                    (left->deadline_ns == right->deadline_ns &&
+                     left->task_id > right->task_id);
+            if (!follows) break;
             size_t previous = order[at - 1];
             order[at - 1] = order[at];
             order[at] = previous;

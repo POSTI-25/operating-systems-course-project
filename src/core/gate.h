@@ -6,6 +6,12 @@
 
 #include <stddef.h>
 
+#define GATE_MASK_SOC UINT8_C(1)
+#define GATE_MASK_THERMAL UINT8_C(2)
+#define GATE_MASK_PROTECTED UINT8_C(4)
+#define GATE_MASK_DEADLINE UINT8_C(8)
+#define GATE_MASK_ALL UINT8_C(15)
+
 typedef enum {
     GATE_PREDICATE_NONE = 0,
     GATE_SOC_FLOOR = 1,
@@ -45,6 +51,9 @@ const SurvivorSet *gate_filter(const Candidate *candidates, size_t count,
                                const Task *task, const GateContext *context,
                                GateFilterResult *result);
 size_t gate_survivor_count(const SurvivorSet *survivors);
+const SurvivorSet *gate_filter_masked(const Candidate *candidates, size_t count,
+    const Task *task, const GateContext *context, uint8_t gate_mask,
+    GateFilterResult *result);
 bool gate_survivor_valid(const SurvivorSet *survivors);
 bool gate_survivor_at(const SurvivorSet *survivors, size_t index, Candidate *out);
 

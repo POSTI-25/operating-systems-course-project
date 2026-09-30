@@ -779,6 +779,73 @@ static void decision_trace_carries_invalidation_and_restoration(void)
     ASSERT_EQ_INT(DECISION_REASON_SELECTED, record->reason);
 }
 
+static void variant_policies_have_exact_rule_masks(void)
+{
+    GovernorVariantPolicy policy;
+    ASSERT_TRUE(governor_variant_policy(GOVERNOR_VARIANT_SAGE_FULL, &policy));
+    ASSERT_EQ_INT(0x1f, policy.mode_mask);
+    ASSERT_EQ_INT(GATE_MASK_ALL, policy.gate_mask);
+    ASSERT_EQ_INT(UTILITY_TERM_ALL, policy.utility_term_mask);
+    ASSERT_EQ_INT(0x3f, policy.ledger_mask);
+    ASSERT_TRUE(policy.prediction_enabled && policy.immediate_fault_cycle);
+    ASSERT_TRUE(governor_variant_policy(GOVERNOR_VARIANT_FIXED_EDF, &policy));
+    ASSERT_EQ_INT(0x01, policy.mode_mask);
+    ASSERT_EQ_INT(0, policy.gate_mask);
+    ASSERT_EQ_INT(0, policy.utility_term_mask);
+    ASSERT_EQ_INT(0, policy.ledger_mask);
+    ASSERT_TRUE(!policy.prediction_enabled && !policy.immediate_fault_cycle);
+    ASSERT_TRUE(governor_variant_policy(GOVERNOR_VARIANT_GOMX_STYLE, &policy));
+    ASSERT_EQ_INT(0x09, policy.mode_mask);
+    ASSERT_EQ_INT(GATE_MASK_SOC | GATE_MASK_DEADLINE, policy.gate_mask);
+    ASSERT_EQ_INT(UTILITY_TERM_DEADLINE | UTILITY_TERM_ENERGY,
+                  policy.utility_term_mask);
+    ASSERT_EQ_INT(0x02, policy.ledger_mask);
+    ASSERT_TRUE(!policy.prediction_enabled && !policy.immediate_fault_cycle);
+    ASSERT_TRUE(governor_variant_policy(GOVERNOR_VARIANT_RANJBAR_STYLE, &policy));
+    ASSERT_EQ_INT(0x1f, policy.mode_mask);
+    ASSERT_EQ_INT(GATE_MASK_THERMAL | GATE_MASK_PROTECTED |
+                  GATE_MASK_DEADLINE, policy.gate_mask);
+    ASSERT_EQ_INT(UTILITY_TERM_FAULT | UTILITY_TERM_DEADLINE |
+                  UTILITY_TERM_THERMAL | UTILITY_TERM_RESOURCE,
+                  policy.utility_term_mask);
+    ASSERT_EQ_INT(0x3d, policy.ledger_mask);
+    ASSERT_TRUE(!policy.prediction_enabled && policy.immediate_fault_cycle);
+    ASSERT_TRUE(!governor_variant_policy((GovernorVariant)99, &policy));
+}
+
+static void fixed_variant_orders_class_then_deadline_then_id(void)
+{
+    static Scenario scenario;
+    Governor governor;
+    GovernorConfig config = setup_config(false);
+    size_t i;
+    static const uint32_t expected_ids[4] = {4, 2, 3, 9};
+    setup_scenario(&scenario, 700);
+    scenario.tasks.count = 4;
+    for (i = 1; i < 4; ++i)
+        scenario.tasks.items[i] = scenario.tasks.items[0];
+    scenario.tasks.items[0].task_id = 9;
+    scenario.tasks.items[0].deadline_ns = 20;
+    scenario.tasks.items[1].task_id = 4;
+    scenario.tasks.items[1].criticality_class = 0;
+    scenario.tasks.items[1].deadline_ns = 30;
+    scenario.tasks.items[2].task_id = 3;
+    scenario.tasks.items[2].deadline_ns = 5;
+    scenario.tasks.items[3].task_id = 2;
+    scenario.tasks.items[3].deadline_ns = 5;
+    config.variant = GOVERNOR_VARIANT_FIXED_EDF;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_EQ_INT(4, governor_commitment_count(&governor));
+    for (i = 0; i < 4; ++i) {
+        const Commitment *commitment = governor_commitment_at(&governor, i);
+        ASSERT_TRUE(commitment != NULL);
+        ASSERT_EQ_INT(expected_ids[i], commitment->task_id);
+        ASSERT_EQ_INT(MODE_FULL, commitment->mode);
+    }
+}
+
 int main(void)
 {
     RUN_TEST(predicted_soc_reaches_gate_before_selection);
@@ -804,5 +871,7 @@ int main(void)
     RUN_TEST(completion_at_fault_instant_wins);
     RUN_TEST(decision_trace_records_gate_utility_and_shadow_rollback);
     RUN_TEST(decision_trace_carries_invalidation_and_restoration);
+    RUN_TEST(variant_policies_have_exact_rule_masks);
+    RUN_TEST(fixed_variant_orders_class_then_deadline_then_id);
     return test_failures != 0;
 }

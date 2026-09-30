@@ -39,8 +39,8 @@ static GateEvaluation failed(GatePredicate predicate)
     return result;
 }
 
-GateEvaluation gate_evaluate(const Candidate *candidate, const Task *task,
-                             const GateContext *context)
+static GateEvaluation evaluate_masked(const Candidate *candidate, const Task *task,
+                             const GateContext *context, uint8_t mask)
 {
     uint64_t physical_capacity;
     uint16_t floor;
@@ -54,6 +54,7 @@ GateEvaluation gate_evaluate(const Candidate *candidate, const Task *task,
         task->primary_subsystem >= N_SUBSYSTEMS ||
         !ledger_energy_config(context->ledger, &physical_capacity, &floor))
         return failed(GATE_INVALID_INPUT);
+    if ((mask & GATE_MASK_SOC) != 0U) {
     threshold = (uint32_t)floor + (uint32_t)context->safety_margin_permille;
     if (threshold > 1000 ||
         context->telemetry->battery_soc_mV_pct.quality != TELEMETRY_QUALITY_OK ||
@@ -66,33 +67,53 @@ GateEvaluation gate_evaluate(const Candidate *candidate, const Task *task,
         ((physical_capacity % 1000U) * delta) / 1000U;
     if (candidate->predicted_cost.energy_cost_mJ > available_mJ)
         return failed(GATE_SOC_FLOOR);
-    if (context->telemetry->temp_mC[task->primary_subsystem].quality !=
+    }
+    if ((mask & GATE_MASK_THERMAL) != 0U &&
+        (context->telemetry->temp_mC[task->primary_subsystem].quality !=
         TELEMETRY_QUALITY_OK ||
         (int64_t)candidate->predicted_cost.thermal_effect_mC >
-        context->remaining_thermal_margin_mC[task->primary_subsystem])
+        context->remaining_thermal_margin_mC[task->primary_subsystem]))
         return failed(GATE_THERMAL_CEILING);
     demand = candidate->predicted_cost.resource_demand;
-    if (!ledger_can_reserve(context->ledger, task->criticality_class, demand,
+    if ((mask & GATE_MASK_PROTECTED) != 0U &&
+        !ledger_can_reserve(context->ledger, task->criticality_class, demand,
                             candidate->predicted_cost.energy_cost_mJ))
         return failed(GATE_PROTECTED_RESIDUAL);
-    if (context->predicted_completion_time_ns > context->absolute_deadline_ns)
+    if ((mask & GATE_MASK_DEADLINE) != 0U &&
+        context->predicted_completion_time_ns > context->absolute_deadline_ns)
         return failed(GATE_DEADLINE);
     return (GateEvaluation){ true, GATE_PREDICATE_NONE };
+}
+
+GateEvaluation gate_evaluate(const Candidate *candidate, const Task *task,
+                             const GateContext *context)
+{
+    return evaluate_masked(candidate, task, context, GATE_MASK_ALL);
 }
 
 const SurvivorSet *gate_filter(const Candidate *candidates, size_t count,
                                const Task *task, const GateContext *context,
                                GateFilterResult *result)
 {
+    return gate_filter_masked(candidates, count, task, context,
+                              GATE_MASK_ALL, result);
+}
+
+const SurvivorSet *gate_filter_masked(const Candidate *candidates, size_t count,
+    const Task *task, const GateContext *context, uint8_t gate_mask,
+    GateFilterResult *result)
+{
     struct SurvivorSet survivors = {0};
     size_t i;
     if (candidates == NULL || task == NULL || context == NULL || result == NULL ||
-        count > SAGE_MAX_CANDIDATES) return NULL;
+        count > SAGE_MAX_CANDIDATES || (gate_mask & ~GATE_MASK_ALL) != 0)
+        return NULL;
     memset(result, 0, sizeof(*result));
     survivors.magic = SURVIVOR_MAGIC;
     result->candidate_count = count;
     for (i = 0; i < count; ++i) {
-        result->evaluations[i] = gate_evaluate(&candidates[i], task, context);
+        result->evaluations[i] = evaluate_masked(&candidates[i], task, context,
+                                                gate_mask);
         if (result->evaluations[i].passed && candidates[i].mode >= MODE_FULL &&
             candidates[i].mode <= MODE_DEGRADED) {
             if (survivors.count >= TASK_EXECUTING_MODE_COUNT) return NULL;

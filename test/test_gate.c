@@ -161,11 +161,47 @@ static void missing_predicate_channels_fail_conservatively(void)
                   gate_evaluate(&candidate, &task, &context).failed_predicate);
 }
 
+static void masked_gate_checks_only_enabled_existing_predicates(void)
+{
+    Ledger ledger;
+    LedgerConfig setup = ledger_config();
+    Task task = { .task_id = 10, .primary_subsystem = SUBSYSTEM_PAYLOAD };
+    TelemetryFrame telemetry;
+    GateContext context = {0};
+    Candidate candidate = { .task_id = 10, .mode = MODE_FULL,
+        .predicted_cost = { .thermal_effect_mC = 200 } };
+    GateFilterResult filtered;
+    const SurvivorSet *survivors;
+    ASSERT_TRUE(ledger_init(&ledger, &setup));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 800, 0, 0));
+    telemetry_frame_init(&telemetry);
+    telemetry.battery_soc_mV_pct.value = 150;
+    context.telemetry = &telemetry;
+    context.ledger = &ledger;
+    context.remaining_thermal_margin_mC[SUBSYSTEM_PAYLOAD] = 100;
+    context.absolute_deadline_ns = 10;
+    survivors = gate_filter_masked(&candidate, 1, &task, &context,
+                                   GATE_MASK_ALL, &filtered);
+    ASSERT_TRUE(survivors != NULL);
+    ASSERT_EQ_INT(GATE_SOC_FLOOR, filtered.evaluations[0].failed_predicate);
+    survivors = gate_filter_masked(&candidate, 1, &task, &context, 0, &filtered);
+    ASSERT_EQ_INT(1, gate_survivor_count(survivors));
+    survivors = gate_filter_masked(&candidate, 1, &task, &context,
+        GATE_MASK_SOC | GATE_MASK_DEADLINE, &filtered);
+    ASSERT_EQ_INT(GATE_SOC_FLOOR, filtered.evaluations[0].failed_predicate);
+    survivors = gate_filter_masked(&candidate, 1, &task, &context,
+        GATE_MASK_THERMAL | GATE_MASK_PROTECTED | GATE_MASK_DEADLINE,
+        &filtered);
+    ASSERT_EQ_INT(GATE_THERMAL_CEILING,
+                  filtered.evaluations[0].failed_predicate);
+}
+
 int main(void)
 {
     RUN_TEST(rejects_each_specific_predicate);
     RUN_TEST(only_gate_survivors_reach_the_set);
     RUN_TEST(mutated_survivor_is_rejected);
     RUN_TEST(missing_predicate_channels_fail_conservatively);
+    RUN_TEST(masked_gate_checks_only_enabled_existing_predicates);
     return test_failures != 0;
 }
