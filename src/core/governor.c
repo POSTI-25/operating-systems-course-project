@@ -714,6 +714,7 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
             !shadow.commitment_active[i]) {
             shadow.emergency_safe_mode = true;
             shadow.emergency_task_id = task->task_id;
+            records[i].reason = DECISION_REASON_EMERGENCY_SAFE_MODE;
             break;
         }
     }

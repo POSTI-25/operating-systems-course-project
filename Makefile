@@ -5,7 +5,7 @@ CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platfo
 UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation execution_adapter logger phase5_report replay
 UNIT_BINS = $(addprefix build/test_,$(UNIT_NAMES))
 SAN_BINS = $(addprefix build/san_test_,$(UNIT_NAMES))
-DECISION_SCENARIOS = low_soc_eclipse high_thermal_load sudden_fault communication_blackout competing_payload_tasks
+DECISION_SCENARIOS = normal_orbit low_soc_eclipse high_thermal_load sudden_fault communication_blackout competing_payload_tasks compound_stress false_alarm_restoration
 
 .PHONY: all test sanitize clean
 
