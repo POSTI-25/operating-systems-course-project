@@ -5,6 +5,7 @@ CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platfo
 UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation execution_adapter logger phase5_report replay
 UNIT_BINS = $(addprefix build/test_,$(UNIT_NAMES))
 SAN_BINS = $(addprefix build/san_test_,$(UNIT_NAMES))
+DECISION_SCENARIOS = low_soc_eclipse high_thermal_load sudden_fault communication_blackout competing_payload_tasks
 
 .PHONY: all test sanitize clean
 
@@ -27,6 +28,12 @@ build/san_test_phase5_report: test/test_phase5_report.c test/phase5_report.c $(C
 
 build/test_replay: test/test_replay.c test/replay.c $(CORE_SRC) | build
 	$(CC) $(CFLAGS) $^ -o $@
+
+build/test_scenario: test/test_scenario.c test/replay.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $^ -o $@
+
+build/san_test_scenario: test/test_scenario.c test/replay.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
 
 build/san_test_replay: test/test_replay.c test/replay.c $(CORE_SRC) | build
 	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
@@ -60,13 +67,15 @@ build/prediction_ab: test/prediction_ab.c $(CORE_SRC) | build
 
 test: all
 	@set -e; for binary in $(UNIT_BINS); do ./$$binary; done
+	@set -e; for name in $(DECISION_SCENARIOS); do ./build/decision_golden_runner scenarios/$$name.scn | diff -u golden/$$name.decisions.expected -; done
 	@set -e; actual=$$(mktemp); trap 'rm -f "$$actual"' EXIT; ./build/golden_runner scenarios/normal_orbit.scn > "$$actual"; diff -u golden/normal_orbit.expected "$$actual"
 	@./build/prediction_ab
 	@./build/prediction_ab scenarios/prediction_trend.scn
 	@./build/sage_rt scenarios/normal_orbit.scn --tick-ms 10 | grep '^SUMMARY '
 
-sanitize: $(SAN_BINS) build/san_golden_runner build/san_prediction_ab build/san_sage_rt
+sanitize: $(SAN_BINS) build/san_golden_runner build/san_prediction_ab build/san_sage_rt build/san_decision_golden_runner
 	@set -e; for binary in $(SAN_BINS); do ./$$binary; done
+	@set -e; for name in $(DECISION_SCENARIOS); do ./build/san_decision_golden_runner scenarios/$$name.scn | diff -u golden/$$name.decisions.expected -; done
 	@set -e; actual=$$(mktemp); trap 'rm -f "$$actual"' EXIT; ./build/san_golden_runner scenarios/normal_orbit.scn > "$$actual"; diff -u golden/normal_orbit.expected "$$actual"
 	@./build/san_prediction_ab scenarios/prediction_trend.scn
 	@./build/san_sage_rt scenarios/normal_orbit.scn --tick-ms 100 | grep '^SUMMARY '
