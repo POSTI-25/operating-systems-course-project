@@ -2,13 +2,13 @@ CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Werror -Isrc -Itest
 SANFLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
 CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platform/platform_ipc.c src/core/telemetry.c src/core/task_model.c src/core/ledger.c src/core/gate.c src/core/mode_generator.c src/core/utility.c src/core/prediction.c src/core/revalidation.c src/core/governor.c src/sim/scenario.c src/sim/simulator.c src/adapter/execution_adapter.c src/adapter/logger.c
-UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation execution_adapter logger phase5_report
+UNIT_NAMES = platform_clock telemetry task_model scenario simulator ledger gate mode_generator utility prediction governor platform_ipc governor_run revalidation execution_adapter logger phase5_report replay
 UNIT_BINS = $(addprefix build/test_,$(UNIT_NAMES))
 SAN_BINS = $(addprefix build/san_test_,$(UNIT_NAMES))
 
 .PHONY: all test sanitize clean
 
-all: build/sage_rt build/golden_runner build/prediction_ab $(UNIT_BINS) build/measure_self_cost
+all: build/sage_rt build/golden_runner build/prediction_ab $(UNIT_BINS) build/measure_self_cost build/decision_golden_runner
 
 build:
 	mkdir -p build
@@ -23,6 +23,18 @@ build/test_phase5_report: test/test_phase5_report.c test/phase5_report.c $(CORE_
 	$(CC) $(CFLAGS) $^ -o $@
 
 build/san_test_phase5_report: test/test_phase5_report.c test/phase5_report.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
+
+build/test_replay: test/test_replay.c test/replay.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $^ -o $@
+
+build/san_test_replay: test/test_replay.c test/replay.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
+
+build/decision_golden_runner: test/decision_golden_runner.c test/replay.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $^ -o $@
+
+build/san_decision_golden_runner: test/decision_golden_runner.c test/replay.c $(CORE_SRC) | build
 	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
 
 build/san_test_%: test/test_%.c $(CORE_SRC) | build
