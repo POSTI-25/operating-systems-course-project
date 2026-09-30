@@ -75,9 +75,7 @@ bool ledger_set_self_cost(Ledger *ledger, uint16_t cpu_pct,
     ledger->self_cpu_pct = (int64_t)cpu_pct;
     ledger->self_energy_mJ = (int64_t)energy_mJ;
     if (!ledger_query(ledger, LEDGER_CPU, &state) ||
-        state.committed > state.capacity ||
-        !ledger_query(ledger, LEDGER_ENERGY, &state) ||
-        state.committed > state.capacity) {
+        !ledger_query(ledger, LEDGER_ENERGY, &state)) {
         ledger->self_cpu_pct = previous_cpu;
         ledger->self_energy_mJ = previous_energy;
         return false;

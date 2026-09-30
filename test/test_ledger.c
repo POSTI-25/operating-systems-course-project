@@ -121,6 +121,23 @@ static void self_cost_is_committed_not_class_zero_protected_capacity(void)
     ASSERT_TRUE(!ledger_commit(&ledger, 1, 0, demand, 0));
 }
 
+static void self_cost_remains_recorded_when_initial_cpu_is_zero(void)
+{
+    Ledger ledger;
+    LedgerConfig setup = config();
+    LedgerDimension cpu;
+    setup.capacity[LEDGER_CPU] = 0;
+    setup.protected_reserve[LEDGER_CPU] = 0;
+    ASSERT_TRUE(ledger_init(&ledger, &setup));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 800, 0, 0));
+    ASSERT_TRUE(ledger_set_self_cost(&ledger, 1, 1));
+    ASSERT_TRUE(ledger_query(&ledger, LEDGER_CPU, &cpu));
+    ASSERT_EQ_INT(1, cpu.committed);
+    ASSERT_EQ_INT(-1, cpu.free);
+    ASSERT_TRUE(!ledger_commit(&ledger, 5, 1,
+        (ResourceDemand){.cpu_pct = 1}, 0));
+}
+
 static void masked_admission_keeps_demand_and_numeric_guards(void)
 {
     Ledger ledger;
@@ -156,5 +173,6 @@ int main(void)
     RUN_TEST(sensor_protected_bits_need_class_zero);
     RUN_TEST(energy_protected_pool_is_available_only_to_class_zero);
     RUN_TEST(self_cost_is_committed_not_class_zero_protected_capacity);
+    RUN_TEST(self_cost_remains_recorded_when_initial_cpu_is_zero);
     return test_failures != 0;
 }

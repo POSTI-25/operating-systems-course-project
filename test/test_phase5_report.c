@@ -1,5 +1,6 @@
 #include "test.h"
 #include "phase5_report.h"
+#include "report_runner.h"
 #include <string.h>
 
 static void setup(Scenario *scenario, Governor *governor)
@@ -129,11 +130,61 @@ static void cycle_accounting_tracks_recovery_and_rejects_overflow(void)
     ASSERT_TRUE(!phase5_note_cycle(&metrics, &scenario, &governor, 4));
 }
 
+static size_t report_row_count(FILE *stream)
+{
+    char line[2048];
+    size_t rows = 0;
+    rewind(stream);
+    while (fgets(line, sizeof(line), stream) != NULL) ++rows;
+    return rows > 0 ? rows - 1 : 0;
+}
+
+static bool report_has_pair(FILE *stream, const char *scenario, const char *variant)
+{
+    char line[2048];
+    char key[128];
+    if (snprintf(key, sizeof(key), "%s,%s,", scenario, variant) < 0) return false;
+    rewind(stream);
+    while (fgets(line, sizeof(line), stream) != NULL)
+        if (strncmp(line, key, strlen(key)) == 0) return true;
+    return false;
+}
+
+static void matrix_has_all_pairs_and_reports_real_losses(void)
+{
+    FILE *stream = tmpfile();
+    FILE *summary = tmpfile();
+    Phase5Metrics full = {0}, comparator = {0};
+    char line[2048];
+    ASSERT_TRUE(stream != NULL && summary != NULL);
+    ASSERT_TRUE(report_runner_write(stream));
+    ASSERT_EQ_INT(32, report_row_count(stream));
+    ASSERT_TRUE(report_has_pair(stream, "compound_stress", "SAGE_FULL"));
+    ASSERT_TRUE(report_has_pair(stream, "compound_stress", "GOMX_STYLE"));
+    ASSERT_TRUE(report_has_pair(stream, "false_alarm_restoration", "RANJBAR_STYLE"));
+    rewind(stream);
+    ASSERT_TRUE(fgets(line, sizeof(line), stream) != NULL);
+    ASSERT_TRUE(strstr(line, "scenario,variant,task_count,") == line);
+    ASSERT_TRUE(strstr(line, ",prediction_abs_error\n") != NULL);
+    full.critical_task_count = 1;
+    comparator.critical_task_count = 1;
+    comparator.critical_completed_count = 1;
+    full.safety_violations = 2;
+    ASSERT_TRUE(report_runner_compare(summary, "synthetic", &full,
+                                      "FIXED_EDF", &comparator));
+    rewind(summary);
+    ASSERT_TRUE(fgets(line, sizeof(line), summary) != NULL);
+    ASSERT_TRUE(strstr(line, "trails") != NULL);
+    fclose(summary);
+    fclose(stream);
+}
+
 int main(void)
 {
     RUN_TEST(auditor_checks_full_invariants_even_when_engine_skips_them);
     RUN_TEST(terminal_counts_keep_rejection_separate_and_emit_na);
     RUN_TEST(auditor_counts_self_cost_against_the_unprotected_pool);
     RUN_TEST(cycle_accounting_tracks_recovery_and_rejects_overflow);
+    RUN_TEST(matrix_has_all_pairs_and_reports_real_losses);
     return test_failures != 0;
 }
