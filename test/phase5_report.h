@@ -25,8 +25,10 @@ void phase5_metrics_init(Phase5Metrics *metrics, const Scenario *scenario);
 bool phase5_audit_instant(Phase5Metrics *metrics, const Scenario *scenario,
     const Governor *governor, const TelemetryFrame *actual, uint64_t now_ns);
 bool phase5_note_fault(Phase5Metrics *metrics, uint64_t now_ns, uint32_t mask);
+bool phase5_note_due_faults(Phase5Metrics *metrics, const Scenario *scenario,
+    uint64_t now_ns, bool seen[SAGE_MAX_FAULTS]);
 bool phase5_note_cycle(Phase5Metrics *metrics, const Scenario *scenario,
-    const Governor *governor, uint64_t now_ns);
+    const Governor *governor, uint64_t now_ns, GovernorCycleResult result);
 bool phase5_metrics_finish(Phase5Metrics *metrics, const Scenario *scenario,
     const Governor *governor);
 bool phase5_metrics_write_csv(FILE *output, const char *scenario,

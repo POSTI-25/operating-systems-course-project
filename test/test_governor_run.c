@@ -151,10 +151,42 @@ static void variant_fault_cadence_runs_through_the_same_pipe(void)
     }
 }
 
+static void final_partial_tick_completes_over_pipe(void)
+{
+    static Scenario scenario;
+    static Governor governor;
+    GovernorConfig config = {0};
+    SimulatorPipe stream;
+    GovernorRunStats stats;
+    FILE *input = fopen("scenarios/normal_orbit.scn", "r");
+    char error[128];
+    int subsystem;
+    ASSERT_TRUE(input != NULL);
+    ASSERT_TRUE(scenario_load_file(input, &scenario, error, sizeof(error)));
+    fclose(input);
+    scenario.duration_ns = 3;
+    scenario.update_count = 0;
+    scenario.tasks.items[0].nominal_exec_ns = 3;
+    scenario.tasks.items[0].deadline_ns = 3;
+    config.alpha = PREDICTION_DEFAULT_ALPHA;
+    config.beta = PREDICTION_DEFAULT_BETA;
+    config.self_cost_cap_ns = UINT64_MAX;
+    for (subsystem = 0; subsystem < N_SUBSYSTEMS; ++subsystem)
+        config.thermal_limit_mC[subsystem] = 100000;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(platform_ipc_spawn(&stream, &scenario, 0));
+    ASSERT_TRUE(governor_run_pipe(&governor, &stream, &stats));
+    ASSERT_TRUE(platform_ipc_close(&stream));
+    ASSERT_EQ_INT(2, stats.tick_cycles);
+    ASSERT_EQ_INT(EXECUTION_COMPLETE, governor.plan.execution[0].phase);
+    ASSERT_EQ_INT(3, governor.plan.execution[0].completed_ns);
+}
+
 int main(void)
 {
     RUN_TEST(full_orbit_and_fault_event_run_over_pipe);
     RUN_TEST(overrun_emits_no_tentative_decision_record);
     RUN_TEST(variant_fault_cadence_runs_through_the_same_pipe);
+    RUN_TEST(final_partial_tick_completes_over_pipe);
     return test_failures != 0;
 }

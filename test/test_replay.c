@@ -9,11 +9,13 @@ typedef struct {
 } Seen;
 
 static bool capture(const Governor *governor, const TelemetryFrame *frame,
-                    uint64_t now_ns, void *context)
+                    uint64_t now_ns, GovernorCycleResult result,
+                    void *context)
 {
     Seen *seen = context;
     const LogRecord *record = governor_log_record_at(governor, 0);
     (void)frame;
+    (void)result;
     if (seen->count >= 8 || record == NULL) return false;
     seen->times[seen->count] = now_ns;
     seen->triggers[seen->count] = record->trigger;
@@ -63,6 +65,35 @@ static void replay_preserves_pipe_cadence_and_completion_boundary(void)
     ASSERT_EQ_INT(4, seen.times[2]);
 }
 
+static void final_partial_tick_settles_execution_without_new_decision(void)
+{
+    static Scenario scenario;
+    static Governor governor;
+    GovernorConfig config = {0};
+    Seen seen = {0};
+    FILE *input = fopen("scenarios/normal_orbit.scn", "r");
+    char error[128];
+    int subsystem;
+    ASSERT_TRUE(input != NULL);
+    ASSERT_TRUE(scenario_load_file(input, &scenario, error, sizeof(error)));
+    fclose(input);
+    scenario.duration_ns = 3;
+    scenario.update_count = 0;
+    scenario.tasks.items[0].nominal_exec_ns = 3;
+    scenario.tasks.items[0].deadline_ns = 3;
+    config.alpha = PREDICTION_DEFAULT_ALPHA;
+    config.beta = PREDICTION_DEFAULT_BETA;
+    config.self_cost_cap_ns = UINT64_MAX;
+    for (subsystem = 0; subsystem < N_SUBSYSTEMS; ++subsystem)
+        config.thermal_limit_mC[subsystem] = 100000;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(replay_run(&scenario, &governor, NULL, capture, &seen));
+    ASSERT_EQ_INT(2, seen.count);
+    ASSERT_EQ_INT(EXECUTION_COMPLETE, governor.plan.execution[0].phase);
+    ASSERT_EQ_INT(3, governor.plan.execution[0].completed_ns);
+    ASSERT_TRUE(!governor_commitment_active(&governor, 0));
+}
+
 typedef struct {
     bool fault_in_eclipse, observed_fault, shedding, emergency;
     bool predicted, upgraded, restored;
@@ -71,10 +102,12 @@ typedef struct {
 } Evidence;
 
 static bool evidence_cycle(const Governor *governor, const TelemetryFrame *frame,
-                           uint64_t now_ns, void *context)
+                           uint64_t now_ns, GovernorCycleResult result,
+                           void *context)
 {
     Evidence *evidence = context;
     size_t i;
+    (void)result;
     evidence->fault_in_eclipse |= frame->eclipse.value != 0 &&
         ((uint32_t)frame->fault_flags.value & 8U) != 0U;
     for (i = 0; i < governor->last_record_count; ++i) {
@@ -162,6 +195,7 @@ static void compound_and_false_alarm_have_required_end_to_end_evidence(void)
 int main(void)
 {
     RUN_TEST(replay_preserves_pipe_cadence_and_completion_boundary);
+    RUN_TEST(final_partial_tick_settles_execution_without_new_decision);
     RUN_TEST(compound_and_false_alarm_have_required_end_to_end_evidence);
     return test_failures != 0;
 }

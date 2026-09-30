@@ -160,20 +160,42 @@ bool phase5_note_fault(Phase5Metrics *metrics, uint64_t now_ns, uint32_t mask)
     return true;
 }
 
+bool phase5_note_due_faults(Phase5Metrics *metrics, const Scenario *scenario,
+    uint64_t now_ns, bool seen[SAGE_MAX_FAULTS])
+{
+    size_t fault;
+    if (metrics == NULL || scenario == NULL || seen == NULL ||
+        scenario->fault_count > SAGE_MAX_FAULTS) return false;
+    for (;;) {
+        size_t next = scenario->fault_count;
+        for (fault = 0; fault < scenario->fault_count; ++fault)
+            if (!seen[fault] && scenario->faults[fault].time_ns <= now_ns &&
+                (next == scenario->fault_count ||
+                 scenario->faults[fault].time_ns < scenario->faults[next].time_ns))
+                next = fault;
+        if (next == scenario->fault_count) return true;
+        if (!phase5_note_fault(metrics, scenario->faults[next].time_ns,
+                               scenario->faults[next].set_mask)) return false;
+        seen[next] = true;
+    }
+}
+
 static uint64_t magnitude(int64_t value)
 {
     return value < 0 ? (uint64_t)(-(value + 1)) + 1U : (uint64_t)value;
 }
 
 bool phase5_note_cycle(Phase5Metrics *metrics, const Scenario *scenario,
-    const Governor *governor, uint64_t now_ns)
+    const Governor *governor, uint64_t now_ns, GovernorCycleResult result)
 {
     size_t i;
     bool emergency = governor->plan.emergency_safe_mode && !metrics->previous_emergency;
     if (!add(&metrics->cpu_time_ns, governor->last_cycle_cpu_ns)) return false;
     metrics->self_cost_cap_ns = governor->config.self_cost_cap_ns;
     if (emergency && !add(&metrics->replan_count, 1)) return false;
-    for (i = 0; i < governor->last_record_count; ++i) {
+    if (result == GOVERNOR_CYCLE_ERROR) return false;
+    for (i = 0; result == GOVERNOR_CYCLE_OK &&
+                i < governor->last_record_count; ++i) {
         const LogRecord *record = governor_log_record_at(governor, i);
         size_t index;
         bool invalidated = record->has_invalidation &&
@@ -232,7 +254,7 @@ bool phase5_metrics_finish(Phase5Metrics *metrics, const Scenario *scenario,
             if (!add(&metrics->mission_work_completed, execution->delivered_value)) return false;
         }
         if (execution->phase == EXECUTION_REJECTED) ++metrics->rejected_by_design;
-        else if (task->deadline_ns < scenario->duration_ns &&
+        else if (task->deadline_ns <= scenario->duration_ns &&
             (execution->phase != EXECUTION_COMPLETE || execution->completed_ns > task->deadline_ns))
             ++metrics->deadline_misses;
     }

@@ -90,11 +90,13 @@ typedef struct {
 } ScenarioCapture;
 
 static bool capture_purpose(const Governor *governor, const TelemetryFrame *frame,
-                            uint64_t now_ns, void *context)
+                            uint64_t now_ns, GovernorCycleResult result,
+                            void *context)
 {
     ScenarioCapture *capture = context;
     size_t i;
     (void)now_ns;
+    if (result != GOVERNOR_CYCLE_OK) return true;
     capture->eclipse |= frame->eclipse.value != 0;
     for (i = 0; i < governor->last_record_count; ++i) {
         const LogRecord *record = governor_log_record_at(governor, i);

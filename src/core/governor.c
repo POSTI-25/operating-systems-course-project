@@ -452,6 +452,38 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
     return governor_cycle_with_fault_mask(governor, now_ns, mask);
 }
 
+static bool advance_execution_plan(GovernorPlan *plan,
+    const Scenario *scenario, uint64_t now_ns)
+{
+    size_t i;
+    for (i = 0; i < scenario->tasks.count; ++i) {
+        bool completed = false;
+        const Task *task = &scenario->tasks.items[i];
+        if (plan->execution[i].phase != EXECUTION_RUNNING) continue;
+        if (!execution_advance(&plan->execution[i], task, now_ns,
+                               &completed)) return false;
+        if (completed) {
+            if (!ledger_release_rate(&plan->ledger, task->task_id))
+                return false;
+            (void)ledger_release_stock(&plan->ledger, task->task_id);
+            plan->commitment_active[i] = false;
+        }
+    }
+    return true;
+}
+
+bool governor_settle_execution_at(Governor *governor, uint64_t now_ns)
+{
+    GovernorPlan shadow;
+    if (governor == NULL || governor->scenario == NULL || !governor->has_frame ||
+        now_ns > governor->scenario->duration_ns) return false;
+    shadow = governor->plan;
+    if (!advance_execution_plan(&shadow, governor->scenario, now_ns))
+        return false;
+    governor->plan = shadow;
+    return true;
+}
+
 GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
                                                     uint64_t now_ns,
                                                     uint32_t fault_set_mask)
@@ -498,19 +530,8 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
             !ledger_snapshot(&before.ledger, records[i].ledger_after))
             return GOVERNOR_CYCLE_ERROR;
     }
-    for (i = 0; i < governor->scenario->tasks.count; ++i) {
-        bool completed = false;
-        const Task *task = &governor->scenario->tasks.items[i];
-        if (shadow.execution[i].phase != EXECUTION_RUNNING) continue;
-        if (!execution_advance(&shadow.execution[i], task, now_ns,
-                               &completed)) return GOVERNOR_CYCLE_ERROR;
-        if (completed) {
-            if (!ledger_release_rate(&shadow.ledger, task->task_id))
-                return GOVERNOR_CYCLE_ERROR;
-            (void)ledger_release_stock(&shadow.ledger, task->task_id);
-            shadow.commitment_active[i] = false;
-        }
-    }
+    if (!advance_execution_plan(&shadow, governor->scenario, now_ns))
+        return GOVERNOR_CYCLE_ERROR;
     if (!ledger_set_telemetry_capacities(&shadow.ledger,
             governor->latest.cpu_avail_pct.quality == TELEMETRY_QUALITY_OK &&
                 governor->latest.cpu_avail_pct.value >= 0 &&
@@ -957,7 +978,8 @@ bool governor_run_pipe_logged(Governor *governor, SimulatorPipe *stream,
         }
         if (!platform_ipc_read_message(stream, &message)) return false;
         if (message.type == PLATFORM_IPC_DONE)
-            return finish_metrics(stats, output);
+            return governor_settle_execution_at(governor,
+                stats->last_sim_time_ns) && finish_metrics(stats, output);
         if (message.type == PLATFORM_IPC_FRAME) {
             size_t accuracy_index;
             if (!governor_observe_at(governor, &message.frame,

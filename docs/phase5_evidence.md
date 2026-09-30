@@ -11,9 +11,11 @@ This is a 32-run virtual replay of the same engine with four input masks. The ex
 | Communication blackout | safety 0, work 360 | safety 1, work 900 | safety 1, work 900 | safety 0, work 360 |
 | Competing payload tasks | safety 0, work 900 | safety 2, work 1500 | safety 2, work 1500 | safety 0, work 900 |
 | Compound stress | safety 0, critical 0/1, replans 3 | safety 9, critical 0/1, replans 0 | safety 9, critical 0/1, replans 0 | safety 0, critical 0/1, replans 3 |
-| False alarm/restoration | safety 0, work 900, replans 2 | safety 4, work 900 | safety 1, work 0, replans 1 | safety 0, work 900 |
+| False alarm/restoration | safety 0, work 0, replans 0 | safety 4, work 900 | safety 1, work 0, replans 1 | safety 0, work 900 |
 
 `safety` is the independently audited count of failing task-predicate observations. It uses all full invariants against actual frames for every variant, even when that variant skipped the corresponding Gate check. Higher completed work under Fixed/EDF or GomX sometimes coincides with a safety violation. `rejected_by_design` is a separate CSV field and is never counted as a deadline miss. Recovery latency is censored for fault runs without a corresponding transition. Completion ratio is task-based, not recurring jobs.
+
+The refreshed host-timed matrix also records zero full-variant work on false alarm/restoration, whereas its deterministic decision golden demonstrates a restoration and completion. The per-pair startup calibration samples the initial decision state, not every later cycle; the measured cap and consequent replay outcome can vary across runs. This limitation is reported, not hidden by changing a scenario or cap threshold to obtain a favorable comparison.
 
 The requested dominance criterion is **not met**. On compound stress, SAGE-RT has fewer audited safety violations than Fixed/EDF and GomX style but ties Ranjbar style at zero. All four variants complete 0/1 critical tasks because the one class-0 task has a 20 ns execution time and the deliberately compact scenario lasts 12 ns; the t=3 ADCS fault pauses it and the t=11 CPU shortfall prevents safe restoration. The fixture and thresholds were not changed to make any variant win. Phase 5 completion remains open pending the user's decision about this unmet comparison criterion.
 

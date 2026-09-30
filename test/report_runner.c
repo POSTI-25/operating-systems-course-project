@@ -11,14 +11,18 @@
 typedef struct {
     Phase5Metrics *metrics;
     const Scenario *scenario;
+    bool fault_seen[SAGE_MAX_FAULTS];
 } ReportContext;
 
 static bool report_cycle(const Governor *governor, const TelemetryFrame *frame,
-                         uint64_t now_ns, void *context)
+                         uint64_t now_ns, GovernorCycleResult result,
+                         void *context)
 {
     ReportContext *report = context;
-    return phase5_note_cycle(report->metrics, report->scenario, governor,
-                             now_ns) &&
+    return phase5_note_due_faults(report->metrics, report->scenario,
+                                  now_ns, report->fault_seen) &&
+        phase5_note_cycle(report->metrics, report->scenario, governor,
+                             now_ns, result) &&
         phase5_audit_instant(report->metrics, report->scenario, governor,
                              frame, now_ns);
 }
@@ -36,7 +40,6 @@ static bool run_report_pair(const char *path, GovernorVariant variant,
     char error[128];
     const char *name;
     int subsystem;
-    size_t fault;
     input = fopen(path, "r");
     if (input == NULL) return false;
     if (!scenario_load_file(input, &scenario, error, sizeof(error))) {
@@ -64,12 +67,12 @@ static bool run_report_pair(const char *path, GovernorVariant variant,
     governor.pending_prediction_cpu_ns = 0;
     governor.pending_prediction_wall_ns = 0;
     phase5_metrics_init(&metrics, &scenario);
-    for (fault = 0; fault < scenario.fault_count; ++fault)
-        if (!phase5_note_fault(&metrics, scenario.faults[fault].time_ns,
-                               scenario.faults[fault].set_mask)) return false;
+    memset(&context, 0, sizeof(context));
     context.metrics = &metrics;
     context.scenario = &scenario;
     if (!replay_run(&scenario, &governor, NULL, report_cycle, &context) ||
+        !phase5_note_due_faults(&metrics, &scenario, scenario.duration_ns,
+                                context.fault_seen) ||
         !phase5_metrics_finish(&metrics, &scenario, &governor)) {
         fprintf(stderr, "replay/audit failed: %s variant=%d\n", path, (int)variant);
         return false;

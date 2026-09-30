@@ -86,6 +86,10 @@ static void terminal_counts_keep_rejection_separate_and_emit_na(void)
     ASSERT_TRUE(phase5_metrics_finish(&metrics, &scenario, &governor));
     ASSERT_EQ_INT(1, metrics.deadline_misses);
     ASSERT_EQ_INT(0, metrics.rejected_by_design);
+    scenario.tasks.items[0].deadline_ns = scenario.duration_ns;
+    phase5_metrics_init(&metrics, &scenario);
+    ASSERT_TRUE(phase5_metrics_finish(&metrics, &scenario, &governor));
+    ASSERT_EQ_INT(1, metrics.deadline_misses);
 }
 
 static void auditor_counts_self_cost_against_the_unprotected_pool(void)
@@ -115,10 +119,15 @@ static void cycle_accounting_tracks_recovery_and_rejects_overflow(void)
     governor.last_records[0].state_before = EXECUTION_RUNNING;
     governor.last_records[0].state_after = EXECUTION_PAUSED;
     governor.last_cycle_cpu_ns = 500;
-    ASSERT_TRUE(phase5_note_cycle(&metrics, &scenario, &governor, 4));
+    ASSERT_TRUE(phase5_note_cycle(&metrics, &scenario, &governor, 4,
+                                  GOVERNOR_CYCLE_OK));
     ASSERT_EQ_INT(1, metrics.replan_count);
     ASSERT_EQ_INT(1, metrics.recovery_latency_ns);
     ASSERT_EQ_INT(500, metrics.cpu_time_ns);
+    ASSERT_TRUE(phase5_note_cycle(&metrics, &scenario, &governor, 5,
+                                  GOVERNOR_CYCLE_OVERRUN));
+    ASSERT_EQ_INT(1, metrics.replan_count);
+    ASSERT_EQ_INT(1000, metrics.cpu_time_ns);
     ASSERT_TRUE(phase5_metrics_finish(&metrics, &scenario, &governor));
     ASSERT_TRUE(!metrics.recovery_latency_censored);
     phase5_metrics_init(&metrics, &scenario);
@@ -127,7 +136,39 @@ static void cycle_accounting_tracks_recovery_and_rejects_overflow(void)
     ASSERT_TRUE(metrics.recovery_latency_censored);
     ASSERT_EQ_INT(9, metrics.recovery_latency_ns);
     metrics.cpu_time_ns = UINT64_MAX;
-    ASSERT_TRUE(!phase5_note_cycle(&metrics, &scenario, &governor, 4));
+    ASSERT_TRUE(!phase5_note_cycle(&metrics, &scenario, &governor, 4,
+                                   GOVERNOR_CYCLE_OK));
+}
+
+static void fault_episodes_are_registered_only_when_due(void)
+{
+    static Scenario scenario;
+    static Governor governor;
+    Phase5Metrics metrics;
+    bool seen[SAGE_MAX_FAULTS] = {0};
+    setup(&scenario, &governor);
+    scenario.fault_count = 2;
+    scenario.faults[0] = (ScenarioFault){.time_ns = 10, .set_mask = 4};
+    scenario.faults[1] = (ScenarioFault){.time_ns = 6, .set_mask = 4};
+    phase5_metrics_init(&metrics, &scenario);
+    ASSERT_TRUE(phase5_note_due_faults(&metrics, &scenario, 3, seen));
+    ASSERT_TRUE(!metrics.fault_pending[SUBSYSTEM_PAYLOAD]);
+    governor.last_records[0].has_invalidation = true;
+    governor.last_records[0].state_before = EXECUTION_RUNNING;
+    governor.last_records[0].state_after = EXECUTION_PAUSED;
+    ASSERT_TRUE(phase5_note_cycle(&metrics, &scenario, &governor, 3,
+                                  GOVERNOR_CYCLE_OK));
+    ASSERT_TRUE(phase5_note_due_faults(&metrics, &scenario, 7, seen));
+    ASSERT_TRUE(metrics.fault_pending[SUBSYSTEM_PAYLOAD]);
+    ASSERT_EQ_INT(6, metrics.fault_time_ns[SUBSYSTEM_PAYLOAD]);
+    ASSERT_TRUE(phase5_note_cycle(&metrics, &scenario, &governor, 7,
+                                  GOVERNOR_CYCLE_OK));
+    ASSERT_EQ_INT(1, metrics.recovery_latency_ns);
+    ASSERT_TRUE(phase5_note_due_faults(&metrics, &scenario, 11, seen));
+    ASSERT_EQ_INT(10, metrics.fault_time_ns[SUBSYSTEM_PAYLOAD]);
+    ASSERT_TRUE(phase5_note_cycle(&metrics, &scenario, &governor, 11,
+                                  GOVERNOR_CYCLE_OK));
+    ASSERT_EQ_INT(1, metrics.recovery_latency_ns);
 }
 
 static size_t report_row_count(FILE *stream)
@@ -185,6 +226,7 @@ int main(void)
     RUN_TEST(terminal_counts_keep_rejection_separate_and_emit_na);
     RUN_TEST(auditor_counts_self_cost_against_the_unprotected_pool);
     RUN_TEST(cycle_accounting_tracks_recovery_and_rejects_overflow);
+    RUN_TEST(fault_episodes_are_registered_only_when_due);
     RUN_TEST(matrix_has_all_pairs_and_reports_real_losses);
     return test_failures != 0;
 }

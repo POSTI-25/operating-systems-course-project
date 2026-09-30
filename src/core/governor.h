@@ -132,6 +132,7 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
 GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
                                                     uint64_t now_ns,
                                                     uint32_t fault_set_mask);
+bool governor_settle_execution_at(Governor *governor, uint64_t now_ns);
 size_t governor_commitment_count(const Governor *governor);
 const Commitment *governor_commitment_at(const Governor *governor, size_t index);
 bool governor_commitment_active(const Governor *governor, size_t task_index);

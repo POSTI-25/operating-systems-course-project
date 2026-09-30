@@ -20,7 +20,8 @@ static bool replay_cycle(Governor *governor, const TelemetryFrame *frame,
                     return false;
         }
     }
-    return on_cycle == NULL || on_cycle(governor, frame, now_ns, context);
+    return on_cycle == NULL || on_cycle(governor, frame, now_ns, result,
+                                       context);
 }
 
 bool replay_run(const Scenario *scenario, Governor *governor,
@@ -55,5 +56,6 @@ bool replay_run(const Scenario *scenario, Governor *governor,
                     scenario->faults[i].set_mask, decision_output, on_cycle, context))
                 return false;
     }
-    return result == SIMULATOR_DONE;
+    return result == SIMULATOR_DONE &&
+        governor_settle_execution_at(governor, scenario->duration_ns);
 }
