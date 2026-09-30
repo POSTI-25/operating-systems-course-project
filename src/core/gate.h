@@ -33,6 +33,7 @@ typedef struct {
     uint16_t safety_margin_permille;
     uint64_t predicted_completion_time_ns;
     uint64_t absolute_deadline_ns;
+    uint8_t ignored_ledger_dimensions; /* Zero preserves the full Gate. */
 } GateContext;
 
 typedef struct SurvivorSet SurvivorSet;

@@ -174,12 +174,20 @@ bool ledger_energy_config(const Ledger *ledger, uint64_t *battery_capacity_mJ,
 bool ledger_can_reserve(const Ledger *ledger, uint8_t criticality_class,
                         ResourceDemand demand, uint64_t energy_cost_mJ)
 {
+    return ledger_can_reserve_masked(ledger, criticality_class, demand,
+                                     energy_cost_mJ, LEDGER_MASK_ALL);
+}
+
+bool ledger_can_reserve_masked(const Ledger *ledger, uint8_t criticality_class,
+    ResourceDemand demand, uint64_t energy_cost_mJ, uint8_t dimension_mask)
+{
     const uint64_t requested[LEDGER_DIMENSION_COUNT] = {
         demand.cpu_pct, energy_cost_mJ, demand.mem_KB, demand.storage_KB,
         demand.sensor_mask, demand.comm_pct
     };
     int id;
-    if (ledger == NULL || demand.cpu_pct > 100 || demand.comm_pct > 100) return false;
+    if (ledger == NULL || demand.cpu_pct > 100 || demand.comm_pct > 100 ||
+        (dimension_mask & ~LEDGER_MASK_ALL) != 0U) return false;
     for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) {
         LedgerDimension state;
         int64_t allowed;
@@ -188,11 +196,17 @@ bool ledger_can_reserve(const Ledger *ledger, uint8_t criticality_class,
             uint32_t available = criticality_class == 0 ?
                 (uint32_t)state.capacity & ~(uint32_t)state.committed :
                 (uint32_t)state.free;
-            if (((uint32_t)requested[id] & available) != (uint32_t)requested[id])
+            if ((dimension_mask & (1U << (unsigned)id)) != 0U &&
+                ((uint32_t)requested[id] & available) != (uint32_t)requested[id])
                 return false;
             continue;
         }
         if (requested[id] > INT64_MAX) return false;
+        if (!checked_add(state.committed, (int64_t)requested[id], &allowed) ||
+            !checked_sub(state.capacity, state.protected_reserve, &allowed) ||
+            !checked_sub(allowed, state.committed, &allowed) ||
+            !checked_sub(allowed, (int64_t)requested[id], &allowed)) return false;
+        if ((dimension_mask & (1U << (unsigned)id)) == 0U) continue;
         allowed = criticality_class == 0 ?
             state.capacity - state.committed : state.free;
         if ((int64_t)requested[id] > allowed) return false;
@@ -203,10 +217,18 @@ bool ledger_can_reserve(const Ledger *ledger, uint8_t criticality_class,
 bool ledger_commit(Ledger *ledger, uint32_t task_id, uint8_t criticality_class,
                    ResourceDemand demand, uint64_t energy_cost_mJ)
 {
+    return ledger_commit_masked(ledger, task_id, criticality_class, demand,
+                                 energy_cost_mJ, LEDGER_MASK_ALL);
+}
+
+bool ledger_commit_masked(Ledger *ledger, uint32_t task_id,
+    uint8_t criticality_class, ResourceDemand demand, uint64_t energy_cost_mJ,
+    uint8_t dimension_mask)
+{
     size_t i;
     size_t vacant = SAGE_MAX_TASKS;
-    if (ledger == NULL || !ledger_can_reserve(ledger, criticality_class,
-                                               demand, energy_cost_mJ)) return false;
+    if (ledger == NULL || !ledger_can_reserve_masked(ledger, criticality_class,
+                         demand, energy_cost_mJ, dimension_mask)) return false;
     for (i = 0; i < SAGE_MAX_TASKS; ++i) {
         if (ledger->reservations[i].in_use &&
             ledger->reservations[i].task_id == task_id) return false;

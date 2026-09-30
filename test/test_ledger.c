@@ -121,9 +121,36 @@ static void self_cost_is_committed_not_class_zero_protected_capacity(void)
     ASSERT_TRUE(!ledger_commit(&ledger, 1, 0, demand, 0));
 }
 
+static void masked_admission_keeps_demand_and_numeric_guards(void)
+{
+    Ledger ledger;
+    LedgerConfig setup = config();
+    LedgerDimension state;
+    ResourceDemand demand = { .cpu_pct = 20 };
+    setup.capacity[LEDGER_CPU] = 10;
+    setup.protected_reserve[LEDGER_CPU] = 0;
+    ASSERT_TRUE(ledger_init(&ledger, &setup));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 200, 0, 0));
+    ASSERT_TRUE(!ledger_commit(&ledger, 9, 1, demand, 100));
+    ASSERT_TRUE(ledger_commit_masked(&ledger, 9, 1, demand, 100, 0));
+    ASSERT_TRUE(ledger_query(&ledger, LEDGER_CPU, &state));
+    ASSERT_EQ_INT(-10, state.free);
+    ASSERT_TRUE(!ledger_commit_masked(&ledger, 9, 1, demand, 100, 0));
+    ASSERT_TRUE(!ledger_commit_masked(&ledger, 10, 1, demand, UINT64_MAX, 0));
+    ASSERT_TRUE(!ledger_commit_masked(&ledger, 10, 1, demand, 100, 2));
+    demand.cpu_pct = 0;
+    ASSERT_TRUE(!ledger_commit_masked(&ledger, 10, 1, demand, 0, 0x80));
+    ASSERT_TRUE(ledger_commit_masked(&ledger, 10, 1, demand,
+                                     (uint64_t)INT64_MAX - 100U, 0));
+    ASSERT_TRUE(!ledger_commit_masked(&ledger, 11, 1, demand, 1, 0));
+    ASSERT_TRUE(ledger_query(&ledger, LEDGER_ENERGY, &state));
+    ASSERT_EQ_INT(INT64_MAX, state.committed);
+}
+
 int main(void)
 {
     RUN_TEST(commit_itself_protects_class_zero_pool);
+    RUN_TEST(masked_admission_keeps_demand_and_numeric_guards);
     RUN_TEST(rate_and_sensor_release_but_stock_persists);
     RUN_TEST(energy_budget_includes_active_task_draws);
     RUN_TEST(sensor_protected_bits_need_class_zero);

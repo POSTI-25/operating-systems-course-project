@@ -28,17 +28,29 @@ int main(int argc, char **argv)
     size_t i;
     bool ran;
     bool child_ok;
-    if (argc != 1 && argc != 2 && argc != 4) {
-        fprintf(stderr, "usage: sage_rt [scenario.scn [--tick-ms positive_integer]]\n");
+    if (argc != 1 && argc != 2 && argc != 4 && argc != 6) {
+        fprintf(stderr, "usage: sage_rt [scenario.scn [--tick-ms positive_integer] [--variant full|fixed|gomx|ranjbar]]\n");
         return 2;
     }
-    if (argc == 4) {
+    for (int arg = 2; arg < argc; arg += 2) {
         char *end;
         unsigned long long millis;
-        if (strcmp(argv[2], "--tick-ms") != 0 || argv[3][0] == '-') return 2;
+        if (strcmp(argv[arg], "--variant") == 0) {
+            if (strcmp(argv[arg + 1], "full") == 0)
+                config.variant = GOVERNOR_VARIANT_SAGE_FULL;
+            else if (strcmp(argv[arg + 1], "fixed") == 0)
+                config.variant = GOVERNOR_VARIANT_FIXED_EDF;
+            else if (strcmp(argv[arg + 1], "gomx") == 0)
+                config.variant = GOVERNOR_VARIANT_GOMX_STYLE;
+            else if (strcmp(argv[arg + 1], "ranjbar") == 0)
+                config.variant = GOVERNOR_VARIANT_RANJBAR_STYLE;
+            else return 2;
+            continue;
+        }
+        if (strcmp(argv[arg], "--tick-ms") != 0 || argv[arg + 1][0] == '-') return 2;
         errno = 0;
-        millis = strtoull(argv[3], &end, 10);
-        if (errno != 0 || end == argv[3] || *end != '\0' || millis == 0 ||
+        millis = strtoull(argv[arg + 1], &end, 10);
+        if (errno != 0 || end == argv[arg + 1] || *end != '\0' || millis == 0 ||
             millis > UINT64_MAX / UINT64_C(1000000)) return 2;
         real_tick_ns = (uint64_t)millis * UINT64_C(1000000);
     }

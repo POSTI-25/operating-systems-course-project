@@ -48,47 +48,54 @@ static bool physical_thermal_failure(const RevalidationInput *input)
         (int64_t)profile->thermal_effect_mC;
 }
 
-static bool physical_failure(const RevalidationInput *input)
+static bool physical_failure(const RevalidationInput *input, uint8_t mask)
 {
-    return physical_soc_failure(input) || physical_thermal_failure(input);
+    return ((mask & GATE_MASK_SOC) != 0U && physical_soc_failure(input)) ||
+        ((mask & GATE_MASK_THERMAL) != 0U && physical_thermal_failure(input));
 }
 
 static RevalidationTrigger observed_trigger(const RevalidationState *state,
-                                            const RevalidationInput *input)
+    const RevalidationInput *input, uint8_t mask, uint8_t ledger_mask,
+    bool fault_enabled)
 {
     const TelemetryFrame *actual = input->actual;
     const AssumptionSnapshot *snapshot = input->assumption_snapshot;
     Subsystem subsystem = input->task->primary_subsystem;
     int id;
-    if ((input->fault_set_mask & (UINT32_C(1) << (unsigned)subsystem)) != 0U ||
+    if (fault_enabled && ((input->fault_set_mask & (UINT32_C(1) << (unsigned)subsystem)) != 0U ||
         actual->fault_flags.quality != TELEMETRY_QUALITY_OK ||
         ((uint32_t)actual->fault_flags.value &
-         (UINT32_C(1) << (unsigned)subsystem)) != 0U)
+         (UINT32_C(1) << (unsigned)subsystem)) != 0U))
         return REVALIDATION_TRIGGER_FAULT_FLAGS;
     if (input->now_ns < input->assumption_snapshot->forecast_horizon_end_ns &&
         state->has_observed_baseline)
         snapshot = &state->observed_baseline;
-    if (actual->battery_soc_mV_pct.quality != TELEMETRY_QUALITY_OK ||
+    if ((mask & GATE_MASK_SOC) != 0U &&
+        (actual->battery_soc_mV_pct.quality != TELEMETRY_QUALITY_OK ||
         exceeds_downward(actual->battery_soc_mV_pct.value,
-            snapshot->soc_permille, REVALIDATION_SOC_TOLERANCE_PERMILLE))
+            snapshot->soc_permille, REVALIDATION_SOC_TOLERANCE_PERMILLE)))
         return REVALIDATION_TRIGGER_SOC;
-    if (actual->temp_mC[subsystem].quality != TELEMETRY_QUALITY_OK ||
+    if ((mask & GATE_MASK_THERMAL) != 0U &&
+        (actual->temp_mC[subsystem].quality != TELEMETRY_QUALITY_OK ||
         exceeds_upward(actual->temp_mC[subsystem].value,
-            snapshot->temp_mC[subsystem], REVALIDATION_TEMP_TOLERANCE_MC))
+            snapshot->temp_mC[subsystem], REVALIDATION_TEMP_TOLERANCE_MC)))
         return REVALIDATION_TRIGGER_THERMAL;
-    if (actual->current_draw_mA.quality != TELEMETRY_QUALITY_OK ||
+    if (mask == GATE_MASK_ALL &&
+        (actual->current_draw_mA.quality != TELEMETRY_QUALITY_OK ||
         exceeds_upward(actual->current_draw_mA.value,
-            snapshot->current_draw_mA, REVALIDATION_DRAW_TOLERANCE_MA))
+            snapshot->current_draw_mA, REVALIDATION_DRAW_TOLERANCE_MA)))
         return REVALIDATION_TRIGGER_CURRENT_DRAW;
-    if (actual->cpu_avail_pct.quality != TELEMETRY_QUALITY_OK ||
+    if ((mask & GATE_MASK_PROTECTED) != 0U &&
+        (actual->cpu_avail_pct.quality != TELEMETRY_QUALITY_OK ||
         actual->mem_avail_KB.quality != TELEMETRY_QUALITY_OK ||
         actual->storage_avail_KB.quality != TELEMETRY_QUALITY_OK ||
         actual->sensor_avail_mask.quality != TELEMETRY_QUALITY_OK ||
-        actual->comm_window_open.quality != TELEMETRY_QUALITY_OK)
+        actual->comm_window_open.quality != TELEMETRY_QUALITY_OK))
         return REVALIDATION_TRIGGER_PROTECTED_RESIDUAL;
     for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) {
         LedgerDimension dimension;
-        if (id == LEDGER_ENERGY) continue;
+        if (id == LEDGER_ENERGY ||
+            (ledger_mask & (1U << (unsigned)id)) == 0U) continue;
         if (!ledger_query(input->ledger, (LedgerDimensionId)id, &dimension))
             return REVALIDATION_TRIGGER_PROTECTED_RESIDUAL;
         if (id == LEDGER_SENSOR ?
@@ -97,12 +104,15 @@ static RevalidationTrigger observed_trigger(const RevalidationState *state,
             dimension.committed > dimension.capacity)
             return REVALIDATION_TRIGGER_PROTECTED_RESIDUAL;
     }
-    if (physical_soc_failure(input)) return REVALIDATION_TRIGGER_SOC;
-    if (physical_thermal_failure(input)) return REVALIDATION_TRIGGER_THERMAL;
+    if ((mask & GATE_MASK_SOC) != 0U && physical_soc_failure(input))
+        return REVALIDATION_TRIGGER_SOC;
+    if ((mask & GATE_MASK_THERMAL) != 0U && physical_thermal_failure(input))
+        return REVALIDATION_TRIGGER_THERMAL;
     return REVALIDATION_TRIGGER_NONE;
 }
 
-static RevalidationTrigger predicted_trigger(const RevalidationInput *input)
+static RevalidationTrigger predicted_trigger(const RevalidationInput *input,
+                                              uint8_t mask)
 {
     uint64_t capacity;
     uint16_t floor;
@@ -112,6 +122,7 @@ static RevalidationTrigger predicted_trigger(const RevalidationInput *input)
     Subsystem subsystem = input->task->primary_subsystem;
     int64_t soc = input->forecast->battery_soc_mV_pct.value;
     int64_t temp = input->forecast->temp_mC[subsystem].value;
+    if ((mask & GATE_MASK_SOC) != 0U) {
     if (!ledger_energy_config(input->ledger, &capacity, &floor))
         return REVALIDATION_TRIGGER_SOC;
     threshold = (uint32_t)floor + input->safety_margin_permille;
@@ -122,17 +133,27 @@ static RevalidationTrigger predicted_trigger(const RevalidationInput *input)
         ((capacity % 1000U) * (uint64_t)(soc - (int64_t)threshold)) / 1000U;
     if (profile->energy_cost_mJ > available)
         return REVALIDATION_TRIGGER_SOC;
-    if (input->forecast->temp_mC[subsystem].quality != TELEMETRY_QUALITY_OK ||
+    }
+    if ((mask & GATE_MASK_THERMAL) != 0U &&
+        (input->forecast->temp_mC[subsystem].quality != TELEMETRY_QUALITY_OK ||
         temp >= input->thermal_limit_mC[subsystem] ||
         (profile->thermal_effect_mC > 0 &&
          temp > input->thermal_limit_mC[subsystem] -
-         (int64_t)profile->thermal_effect_mC))
+         (int64_t)profile->thermal_effect_mC)))
         return REVALIDATION_TRIGGER_THERMAL;
     return REVALIDATION_TRIGGER_NONE;
 }
 
 RevalidationEvent revalidation_step(RevalidationState *state,
                                     const RevalidationInput *input)
+{
+    return revalidation_step_masked(state, input, GATE_MASK_ALL,
+                                     LEDGER_MASK_ALL, true);
+}
+
+RevalidationEvent revalidation_step_masked(RevalidationState *state,
+    const RevalidationInput *input, uint8_t gate_mask, uint8_t ledger_mask,
+    bool fault_enabled)
 {
     RevalidationTrigger observed;
     RevalidationTrigger predicted;
@@ -148,11 +169,11 @@ RevalidationEvent revalidation_step(RevalidationState *state,
         return REVALIDATION_ERROR;
     observation_epoch = input->observation_epoch == 0 ?
         input->now_ns : input->observation_epoch;
-    observed = observed_trigger(state, input);
-    predicted = predicted_trigger(input);
-    fault_active = input->actual->fault_flags.quality != TELEMETRY_QUALITY_OK ||
+    observed = observed_trigger(state, input, gate_mask, ledger_mask, fault_enabled);
+    predicted = predicted_trigger(input, gate_mask);
+    fault_active = fault_enabled && (input->actual->fault_flags.quality != TELEMETRY_QUALITY_OK ||
         ((uint32_t)input->actual->fault_flags.value &
-         (UINT32_C(1) << (unsigned)input->task->primary_subsystem)) != 0U;
+         (UINT32_C(1) << (unsigned)input->task->primary_subsystem)) != 0U);
     if (state->invalid) {
         if (state->record.cause_type == INVALIDATION_PREDICTED_RISK) {
             if (observed != REVALIDATION_TRIGGER_NONE) {
@@ -195,7 +216,7 @@ RevalidationEvent revalidation_step(RevalidationState *state,
     if (observed == REVALIDATION_TRIGGER_NONE &&
         predicted == REVALIDATION_TRIGGER_NONE) return REVALIDATION_NONE;
     if (cause == state->last_restored_cause &&
-        input->now_ns < state->dwell_until_ns && !physical_failure(input) &&
+        input->now_ns < state->dwell_until_ns && !physical_failure(input, gate_mask) &&
         observed != REVALIDATION_TRIGGER_PROTECTED_RESIDUAL)
         return REVALIDATION_NONE;
     state->invalid = true;

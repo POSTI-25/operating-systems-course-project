@@ -185,12 +185,13 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
     if (!predicted_for_task(governor, task, now_ns, &forecast, &horizon_end) ||
         forecast.battery_soc_mV_pct.value < 0 ||
         forecast.battery_soc_mV_pct.value > 1000) return false;
-    if (!prediction_tracker_add(tracker, task->task_id,
+    if (policy.prediction_enabled && !prediction_tracker_add(tracker, task->task_id,
                                  now_ns, horizon_end, &forecast)) return false;
     count = mode_generator_generate(task, &forecast, candidates, SAGE_MAX_CANDIDATES);
     if (count == 0) return false;
     gate.telemetry = &forecast;
     gate.ledger = &shadow->ledger;
+    gate.ignored_ledger_dimensions = (uint8_t)(LEDGER_MASK_ALL & ~policy.ledger_mask);
     gate.safety_margin_permille = governor->config.safety_margin_permille;
     gate.absolute_deadline_ns = task->deadline_ns;
     if (task->nominal_exec_ns > UINT64_MAX - now_ns) return false;
@@ -259,9 +260,10 @@ static bool select_task(Governor *governor, GovernorPlan *shadow,
         }
         if ((slot == shadow->commitment_count &&
              shadow->commitment_count >= SAGE_MAX_TASKS) ||
-            !ledger_commit(&shadow->ledger, task->task_id, task->criticality_class,
+            !ledger_commit_masked(&shadow->ledger, task->task_id, task->criticality_class,
                 selected.selected.predicted_cost.resource_demand,
-                selected.selected.predicted_cost.energy_cost_mJ)) return false;
+                selected.selected.predicted_cost.energy_cost_mJ,
+                policy.ledger_mask)) return false;
         entry = &shadow->commitments[slot];
         if (slot == shadow->commitment_count) ++shadow->commitment_count;
         entry->task_id = task->task_id;
@@ -379,6 +381,8 @@ static bool trim_overcommitted(Governor *governor, GovernorPlan *plan,
                                bool *record_touched)
 {
     size_t attempts;
+    GovernorVariantPolicy policy;
+    if (!governor_variant_policy(governor->config.variant, &policy)) return false;
     for (attempts = 0; attempts < governor->scenario->tasks.count; ++attempts) {
         bool violated[LEDGER_DIMENSION_COUNT] = {0};
         bool any = false;
@@ -387,7 +391,11 @@ static bool trim_overcommitted(Governor *governor, GovernorPlan *plan,
         size_t i;
         int id;
         if (!capacity_violation(governor, plan, violated)) return false;
-        for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) any |= violated[id];
+        for (id = 0; id < LEDGER_DIMENSION_COUNT; ++id) {
+            if ((policy.ledger_mask & (1U << (unsigned)id)) == 0U)
+                violated[id] = false;
+            any |= violated[id];
+        }
         if (!any) return true;
         for (i = 0; i < governor->scenario->tasks.count; ++i) {
             const Task *task = &governor->scenario->tasks.items[i];
@@ -459,9 +467,14 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
     uint64_t start_cpu;
     uint64_t end_cpu;
     uint16_t budget_soc;
+    uint64_t harvest_horizon = UINT64_MAX;
+    uint64_t harvest_mJ = 0;
     uint64_t prediction_cpu;
     size_t initial_commitment_count;
+    GovernorVariantPolicy policy;
     if (governor == NULL || !governor->has_frame) return GOVERNOR_CYCLE_ERROR;
+    if (!governor_variant_policy(governor->config.variant, &policy))
+        return GOVERNOR_CYCLE_ERROR;
     if (!process_cpu_time_ns(&start_cpu)) return GOVERNOR_CYCLE_ERROR;
     prediction_cpu = governor->pending_prediction_cpu_ns;
     governor->pending_prediction_cpu_ns = 0;
@@ -535,12 +548,29 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
             if ((uint16_t)forecast.battery_soc_mV_pct.value < budget_soc)
                 budget_soc = (uint16_t)forecast.battery_soc_mV_pct.value;
         }
+        if (shadow.pending[i] || shadow.commitment_active[i]) {
+            uint64_t duration = governor->scenario->tasks.items[i].nominal_exec_ns;
+            if (duration > UINT64_MAX - governor->config.lookahead_ns)
+                return GOVERNOR_CYCLE_ERROR;
+            duration += governor->config.lookahead_ns;
+            if (duration < harvest_horizon) harvest_horizon = duration;
+        }
+    }
+    if (governor->config.variant == GOVERNOR_VARIANT_GOMX_STYLE &&
+        harvest_horizon != UINT64_MAX &&
+        governor->latest.eclipse.quality == TELEMETRY_QUALITY_OK &&
+        governor->latest.eclipse.value == 0 &&
+        governor->latest.solar_input_mW.quality == TELEMETRY_QUALITY_OK &&
+        governor->latest.solar_input_mW.value > 0) {
+        uint64_t power = (uint64_t)governor->latest.solar_input_mW.value;
+        if (harvest_horizon > UINT64_MAX / power) return GOVERNOR_CYCLE_ERROR;
+        harvest_mJ = power * harvest_horizon / UINT64_C(1000000000);
     }
     if (governor->latest.battery_soc_mV_pct.quality == TELEMETRY_QUALITY_OK &&
         (!shadow.has_energy_soc_timestamp ||
          governor->latest.battery_soc_mV_pct.timestamp_ns >
              shadow.last_energy_soc_timestamp_ns)) {
-        if (!ledger_update_energy(&shadow.ledger, budget_soc, 0, 0))
+        if (!ledger_update_energy(&shadow.ledger, budget_soc, harvest_mJ, 0))
             return GOVERNOR_CYCLE_ERROR;
         shadow.energy_refresh_epoch = governor->observation_epoch;
         shadow.last_energy_soc_timestamp_ns =
@@ -633,7 +663,8 @@ GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
         if (!record_touched[i] &&
             !ledger_snapshot(&shadow.ledger,
                 records[i].ledger_before)) return GOVERNOR_CYCLE_ERROR;
-        event = revalidation_step(&shadow.revalidation[i], &check);
+        event = revalidation_step_masked(&shadow.revalidation[i], &check,
+            policy.gate_mask, policy.ledger_mask, policy.immediate_fault_cycle);
         if (event == REVALIDATION_ERROR) return GOVERNOR_CYCLE_ERROR;
         if (event == REVALIDATION_INVALIDATE) {
             records[i].has_invalidation = true;
@@ -963,6 +994,10 @@ bool governor_run_pipe_logged(Governor *governor, SimulatorPipe *stream,
                 next_tick += governor->scenario->step_ns;
             }
         } else if (message.type == PLATFORM_IPC_FAULT_ESCALATION) {
+            GovernorVariantPolicy policy;
+            if (!governor_variant_policy(governor->config.variant, &policy))
+                return false;
+            if (!policy.immediate_fault_cycle) continue;
             GovernorCycleResult result = governor_cycle_with_fault_mask(governor,
                     message.sim_time_ns, message.fault_set_mask);
             if (result == GOVERNOR_CYCLE_ERROR) return false;

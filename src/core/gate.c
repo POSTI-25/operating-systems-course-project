@@ -76,8 +76,9 @@ static GateEvaluation evaluate_masked(const Candidate *candidate, const Task *ta
         return failed(GATE_THERMAL_CEILING);
     demand = candidate->predicted_cost.resource_demand;
     if ((mask & GATE_MASK_PROTECTED) != 0U &&
-        !ledger_can_reserve(context->ledger, task->criticality_class, demand,
-                            candidate->predicted_cost.energy_cost_mJ))
+        !ledger_can_reserve_masked(context->ledger, task->criticality_class, demand,
+            candidate->predicted_cost.energy_cost_mJ,
+            (uint8_t)(LEDGER_MASK_ALL & ~context->ignored_ledger_dimensions)))
         return failed(GATE_PROTECTED_RESIDUAL);
     if ((mask & GATE_MASK_DEADLINE) != 0U &&
         context->predicted_completion_time_ns > context->absolute_deadline_ns)

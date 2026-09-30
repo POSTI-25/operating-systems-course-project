@@ -846,6 +846,88 @@ static void fixed_variant_orders_class_then_deadline_then_id(void)
     }
 }
 
+static void baseline_admission_and_revalidation_use_enabled_inputs(void)
+{
+    static Scenario scenario;
+    Governor governor;
+    GovernorConfig config = setup_config(false);
+    TelemetryFrame frame;
+    size_t m;
+    setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = 8;
+    scenario.initial.cpu_avail_pct.value = 10;
+    scenario.initial.temp_mC[SUBSYSTEM_PAYLOAD].value = 100001;
+    scenario.initial.fault_flags.value = 4;
+    for (m = 0; m < TASK_EXECUTING_MODE_COUNT; ++m) {
+        scenario.tasks.items[0].modes[m].resource_demand.cpu_pct = 20;
+        scenario.tasks.items[0].modes[m].resource_demand.comm_pct = 10;
+        scenario.tasks.items[0].modes[m].energy_cost_mJ = 100;
+    }
+    config.variant = GOVERNOR_VARIANT_GOMX_STYLE;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_TRUE(governor_commitment_active(&governor, 0));
+    frame = scenario.initial;
+    frame.battery_soc_mV_pct.timestamp_ns = 2;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 2));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 2, false));
+    ASSERT_TRUE(governor_commitment_active(&governor, 0));
+    scenario.initial.battery_soc_mV_pct.value = 700;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_TRUE(!governor_commitment_active(&governor, 0));
+
+    config.variant = GOVERNOR_VARIANT_RANJBAR_STYLE;
+    scenario.initial.temp_mC[SUBSYSTEM_PAYLOAD].value = 0;
+    scenario.initial.fault_flags.value = 0;
+    scenario.initial.cpu_avail_pct.value = 100;
+    scenario.initial.comm_window_open.value = 1;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_TRUE(governor_commitment_active(&governor, 0));
+    frame = scenario.initial;
+    frame.battery_soc_mV_pct.value = 100;
+    frame.battery_soc_mV_pct.timestamp_ns = 2;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 2));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 2, false));
+    ASSERT_TRUE(governor_commitment_active(&governor, 0));
+    frame.temp_mC[SUBSYSTEM_PAYLOAD].value = 100001;
+    ASSERT_TRUE(governor_observe_at(&governor, &frame, 4));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 4, false));
+    ASSERT_TRUE(!governor_commitment_active(&governor, 0));
+}
+
+static void gomx_harvest_is_sunlit_only_and_not_a_holt_forecast(void)
+{
+    static Scenario scenario;
+    Governor governor;
+    GovernorConfig config = setup_config(true);
+    LedgerDimension energy;
+    setup_scenario(&scenario, 700);
+    scenario.tasks.items[0].nominal_exec_ns = UINT64_C(1000000000);
+    scenario.tasks.items[0].deadline_ns = UINT64_C(2000000000);
+    scenario.initial.solar_input_mW.value = 2000;
+    config.lookahead_ns = 0;
+    config.variant = GOVERNOR_VARIANT_GOMX_STYLE;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_ENERGY, &energy));
+    ASSERT_EQ_INT(12000, energy.capacity);
+    scenario.initial.eclipse.value = 1;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_EQ_INT(GOVERNOR_CYCLE_OK, governor_cycle(&governor, 0, false));
+    ASSERT_TRUE(ledger_query(&governor.plan.ledger, LEDGER_ENERGY, &energy));
+    ASSERT_EQ_INT(10000, energy.capacity);
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial,
+                                   UINT64_C(1000000000)));
+    ASSERT_EQ_INT(0, governor_accuracy_count(&governor));
+}
+
 int main(void)
 {
     RUN_TEST(predicted_soc_reaches_gate_before_selection);
@@ -872,6 +954,8 @@ int main(void)
     RUN_TEST(decision_trace_records_gate_utility_and_shadow_rollback);
     RUN_TEST(decision_trace_carries_invalidation_and_restoration);
     RUN_TEST(variant_policies_have_exact_rule_masks);
+    RUN_TEST(baseline_admission_and_revalidation_use_enabled_inputs);
+    RUN_TEST(gomx_harvest_is_sunlit_only_and_not_a_holt_forecast);
     RUN_TEST(fixed_variant_orders_class_then_deadline_then_id);
     return test_failures != 0;
 }
