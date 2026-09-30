@@ -9,7 +9,7 @@ DECISION_SCENARIOS = normal_orbit low_soc_eclipse high_thermal_load sudden_fault
 
 .PHONY: all test sanitize report clean
 
-all: build/sage_rt build/golden_runner build/prediction_ab $(UNIT_BINS) build/measure_self_cost build/decision_golden_runner build/report_runner
+all: build/sage_rt build/golden_runner build/prediction_ab $(UNIT_BINS) build/measure_self_cost build/decision_golden_runner build/report_runner build/traceability_check
 
 build:
 	mkdir -p build
@@ -50,6 +50,12 @@ build/report_runner: test/report_main.c test/report_runner.c test/phase5_report.
 build/san_report_runner: test/report_main.c test/report_runner.c test/phase5_report.c test/replay.c $(CORE_SRC) | build
 	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
 
+build/traceability_check: test/traceability_check.c | build
+	$(CC) $(CFLAGS) $< -o $@
+
+build/san_traceability_check: test/traceability_check.c | build
+	$(CC) $(CFLAGS) $(SANFLAGS) $< -o $@
+
 build/san_test_%: test/test_%.c $(CORE_SRC) | build
 	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
 
@@ -73,6 +79,7 @@ build/prediction_ab: test/prediction_ab.c $(CORE_SRC) | build
 
 test: all
 	@set -e; for binary in $(UNIT_BINS); do ./$$binary; done
+	@./build/traceability_check
 	@set -e; for name in $(DECISION_SCENARIOS); do ./build/decision_golden_runner scenarios/$$name.scn | diff -u golden/$$name.decisions.expected -; done
 	@set -e; actual=$$(mktemp); trap 'rm -f "$$actual"' EXIT; ./build/golden_runner scenarios/normal_orbit.scn > "$$actual"; diff -u golden/normal_orbit.expected "$$actual"
 	@./build/prediction_ab
@@ -82,8 +89,9 @@ test: all
 report: build/report_runner
 	./build/report_runner > docs/phase5_metrics.csv
 
-sanitize: $(SAN_BINS) build/san_golden_runner build/san_prediction_ab build/san_sage_rt build/san_decision_golden_runner build/san_report_runner
+sanitize: $(SAN_BINS) build/san_golden_runner build/san_prediction_ab build/san_sage_rt build/san_decision_golden_runner build/san_report_runner build/san_traceability_check
 	@set -e; for binary in $(SAN_BINS); do ./$$binary; done
+	@./build/san_traceability_check
 	@set -e; for name in $(DECISION_SCENARIOS); do ./build/san_decision_golden_runner scenarios/$$name.scn | diff -u golden/$$name.decisions.expected -; done
 	@set -e; actual=$$(mktemp); trap 'rm -f "$$actual"' EXIT; ./build/san_golden_runner scenarios/normal_orbit.scn > "$$actual"; diff -u golden/normal_orbit.expected "$$actual"
 	@./build/san_prediction_ab scenarios/prediction_trend.scn

@@ -3,7 +3,7 @@
 
 This is the single source of truth for the MVP build. AI coding agents (GitHub Copilot / Luna, Antigravity) must read the relevant sections before touching code, implement only the phase they are asked for, and never introduce behavior that isn't specified here. If something is ambiguous, stop and flag it in §18 rather than guessing.
 
-Status: **Phase 1 complete.**
+Status: **Phases 1–4 complete; Phase 5 comparison exit criterion remains open.**
 
 ---
  
@@ -354,7 +354,7 @@ Run all four against all 8 scenarios; report side by side, with particular atten
 | 2 | Decision core, static | Gate + Ledger standalone-tested; Mode Generator + Utility (Option A); fallback rule; provisional self-cost | ✅ Done |
 | 3 | Prediction + governor | Holt's method; poll-based governor; fork/pipe sim; shadow-state overrun handling; final self-cost cap; A/B result | ✅ Done |
 | 4 | Revalidation + edge cases | Typed invalidation, hysteresis, gate-repassing restoration; emergency safe mode; stale-telemetry handling | ✅ Done |
-| 5 | Execution, scenarios, baselines, evidence | All 8 scenarios; 4 baseline configs; metrics report; novelty traceability check | ⬜ Not started |
+| 5 | Execution, scenarios, baselines, evidence | All 8 scenarios; 4 baseline configs; metrics report; novelty traceability check | ⚠️ Open — comparison criterion unmet |
 
 Agents update only the Status column (and the Decision Log, §18) — never rewrite scope or exit criteria without human approval.
 
@@ -371,6 +371,10 @@ Agents update only the Status column (and the Decision Log, §18) — never rewr
 - **Optional hardening** (off by default, behind a build/run flag): `sched_setscheduler(SCHED_FIFO)`, `mlockall`. Must degrade gracefully without root.
 
 ## 18. Decision Log & Open Questions
+
+- 2026-10-01: **Phase 5 measured comparison and open exit criterion** — 32 virtual runs cover all eight scenarios and four same-engine variants (`docs/phase5_metrics.csv`). On compound stress, SAGE-RT has zero audited safety violations versus nine for Fixed/EDF and GomX-style, but ties Ranjbar-style at zero. Critical completion is 0/1 for all four because the deliberately minimal 12 ns scenario ends before the 20 ns class-0 task could complete after its t=3 fault and t=11 CPU loss. The requested strict safety and critical-completion advantage over every baseline is not demonstrated. Per the approved evidence rule, fixtures and thresholds remain unchanged and Phase 5 stays open for a user decision. The independent auditor and N1–N10 evidence index are in `docs/phase5_evidence.md`.
+- 2026-10-01: **Phase 5 report conventions** — 64 full decision passes per scenario/variant calibrate a host-dependent hard cap using a 10 ms real tick equivalent; energy self-cost retains the 2.0 W modeled assumption. CSV `cpu_time_ns` sums the run, while `self_cost_cap_ns` limits each cycle. Virtual jitter is `NA`; battery survival is exogenous because execution does not feed back to scripted SOC; absent class-0 or matched predictions use `NA`, never an artificial 100% or zero. Fault recovery is censored if no corresponding plan transition occurs.
+- 2026-10-01: **Zero-CPU self-cost accounting** — `false_alarm_restoration` intentionally starts with zero task CPU until t=8. The unavoidable measured Governor self-cost remains committed in the Ledger even while capacity is zero, producing negative free CPU; full Gate admission remains blocked until availability rises. Startup calibration no longer rejects that representable deficit. This exposes the temporary shortfall rather than silently omitting the Governor cost. The initial zero-CPU interval is not claimed as physically safe flight operation.
 
 - 2026-09-22: Utility function fixed to **Option A** (net-benefit, no division).
 - 2026-09-22: Tech stack fixed to portable POSIX (`poll`, `fork`+`pipe`), no Unity, no CMake — see §17.
