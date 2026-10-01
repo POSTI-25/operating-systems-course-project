@@ -192,10 +192,83 @@ static void compound_and_false_alarm_have_required_end_to_end_evidence(void)
         (unsigned long long)evidence.risk_horizon, (unsigned long long)evidence.restore_time);
 }
 
+typedef struct {
+    Governor *governor;
+    Evidence evidence;
+    bool forced_overrun;
+    bool late_admission;
+    bool full_restoration;
+} DelayedAdmission;
+
+static bool delayed_admission_cycle(const Governor *governor,
+    const TelemetryFrame *frame, uint64_t now_ns,
+    GovernorCycleResult result, void *context)
+{
+    DelayedAdmission *delayed = context;
+    const LogRecord *record = governor_log_record_at(governor, 0);
+    if (now_ns == 6) {
+        delayed->governor->config.self_cost_cap_ns = 1;
+        delayed->governor->config.test_injected_cpu_ns_per_task = 1000000;
+    }
+    if (now_ns == 8) {
+        delayed->forced_overrun = result == GOVERNOR_CYCLE_OVERRUN;
+        delayed->governor->config.self_cost_cap_ns = UINT64_MAX;
+        delayed->governor->config.test_injected_cpu_ns_per_task = 0;
+        return delayed->forced_overrun;
+    }
+    if (result != GOVERNOR_CYCLE_OK) return false;
+    if (now_ns == 10 && record != NULL)
+        delayed->late_admission = record->has_selected &&
+            record->selected_mode <= MODE_DEGRADED;
+    if (record != NULL && record->restoration)
+        delayed->full_restoration = record->has_selected &&
+            record->selected_mode == MODE_FULL;
+    return evidence_cycle(governor, frame, now_ns, result,
+                          &delayed->evidence);
+}
+
+static void false_alarm_restores_after_one_lost_admission_tick(void)
+{
+    static Scenario scenario;
+    static Governor governor;
+    GovernorConfig config = {0};
+    GovernorSelfCost calibration;
+    DelayedAdmission delayed = {.governor = &governor};
+    FILE *input = fopen("scenarios/false_alarm_restoration.scn", "r");
+    char error[128];
+    int subsystem;
+    ASSERT_TRUE(input != NULL);
+    ASSERT_TRUE(scenario_load_file(input, &scenario, error, sizeof(error)));
+    fclose(input);
+    config.alpha = PREDICTION_DEFAULT_ALPHA;
+    config.beta = PREDICTION_DEFAULT_BETA;
+    config.lookahead_ns = scenario.step_ns;
+    config.prediction_enabled = true;
+    config.self_cost_cap_ns = UINT64_MAX;
+    for (subsystem = 0; subsystem < N_SUBSYSTEMS; ++subsystem)
+        config.thermal_limit_mC[subsystem] = 100000;
+    ASSERT_TRUE(governor_init(&governor, &scenario, &config));
+    ASSERT_TRUE(governor_observe_at(&governor, &scenario.initial, 0));
+    ASSERT_TRUE(governor_calibrate_self_cost(&governor, 64, 10000000, 2.0,
+                                             &calibration));
+    governor.config.self_cost_cap_ns = UINT64_MAX;
+    governor.pending_prediction_cpu_ns = 0;
+    governor.pending_prediction_wall_ns = 0;
+    ASSERT_TRUE(replay_run(&scenario, &governor, NULL,
+                           delayed_admission_cycle, &delayed));
+    ASSERT_TRUE(delayed.forced_overrun);
+    ASSERT_TRUE(delayed.late_admission && delayed.full_restoration);
+    ASSERT_TRUE(delayed.evidence.predicted && delayed.evidence.restored &&
+                !delayed.evidence.upgraded);
+    ASSERT_EQ_INT(EXECUTION_COMPLETE, governor.plan.execution[0].phase);
+    ASSERT_EQ_INT(900, governor.plan.execution[0].delivered_value);
+}
+
 int main(void)
 {
     RUN_TEST(replay_preserves_pipe_cadence_and_completion_boundary);
     RUN_TEST(final_partial_tick_settles_execution_without_new_decision);
     RUN_TEST(compound_and_false_alarm_have_required_end_to_end_evidence);
+    RUN_TEST(false_alarm_restores_after_one_lost_admission_tick);
     return test_failures != 0;
 }
