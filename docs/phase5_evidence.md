@@ -30,7 +30,7 @@ Traceability evidence, checked by `build/traceability_check`:
 | N5 | `test_mode_generator::profiles_generate_five_canonical_modes` and `test_governor::variant_policies_have_exact_rule_masks`; full selects THROTTLED under heat and DEGRADED under low SOC, modes the GomX mask disables. |
 | N6 | `test_governor::calibration_sets_hard_cap_and_modeled_ledger_reserve`; `normal_orbit,SAGE_FULL` CSV records measured CPU time, calibrated cap, and modeled energy. The cap is per cycle; CSV CPU time is summed over the run. |
 | N7 | `test_governor_run::variant_fault_cadence_runs_through_the_same_pipe`; `sudden_fault` CSV records full recovery latency 0 ns, while tick-only GomX is censored at 9 ns. |
-| N8 | `high_thermal_load` CSV: full safety violations 0 versus GomX 1; `low_soc_eclipse` full 0 versus Ranjbar 2. The sudden-fault trace also shows immediate full invalidation. |
+| N8 | `high_thermal_load` CSV: full safety violations 0 versus GomX 1; `sudden_fault.decisions.expected` shows immediate fault-triggered invalidation; the `low_soc_eclipse` full 0 versus Ranjbar 2 comparison is a separate battery-model ablation, not proof of N8. |
 | N9 | `prediction_ab` smooth-trend A/B in PRD §18 (Holt absolute SOC error 234 versus persistence 270); `low_soc_eclipse.decisions.expected` shows predicted SOC gating, and false-alarm trace stores predicted risk horizon. |
 | N10 | `compound_stress.decisions.expected` at t=12 shows class-0 Gate protected-residual failure and `EMERGENCY_SAFE_MODE`; `test_replay::compound_and_false_alarm_have_required_end_to_end_evidence` verifies the event sequence. |
 
