@@ -75,6 +75,9 @@ typedef enum {
 
 RevalidationEvent revalidation_step(RevalidationState *state,
                                     const RevalidationInput *input);
+RevalidationEvent revalidation_step_masked(RevalidationState *state,
+    const RevalidationInput *input, uint8_t gate_mask, uint8_t ledger_mask,
+    bool fault_enabled);
 bool revalidation_complete_restore(RevalidationState *state, uint64_t now_ns,
                                    uint64_t step_ns);
 bool revalidation_force_capacity_invalidation(RevalidationState *state,

@@ -1,4 +1,5 @@
 #include "test.h"
+#include "replay.h"
 #include "sim/scenario.h"
 
 #include <string.h>
@@ -83,6 +84,92 @@ static void battery_capacity_above_ledger_range_is_rejected(void)
     fclose(input);
 }
 
+typedef struct {
+    bool eclipse, soc, thermal, lower, fault, residual;
+    size_t tasks, faults, updates;
+} ScenarioCapture;
+
+static bool capture_purpose(const Governor *governor, const TelemetryFrame *frame,
+                            uint64_t now_ns, GovernorCycleResult result,
+                            void *context)
+{
+    ScenarioCapture *capture = context;
+    size_t i;
+    (void)now_ns;
+    if (result != GOVERNOR_CYCLE_OK) return true;
+    capture->eclipse |= frame->eclipse.value != 0;
+    for (i = 0; i < governor->last_record_count; ++i) {
+        const LogRecord *record = governor_log_record_at(governor, i);
+        int m;
+        capture->fault |= record->trigger == DECISION_TRIGGER_FAULT;
+        capture->lower |= record->has_selected &&
+            (record->selected_mode == MODE_THROTTLED || record->selected_mode == MODE_DEGRADED);
+        if (!record->has_candidates) continue;
+        for (m = 0; m < TASK_EXECUTING_MODE_COUNT; ++m) {
+            capture->soc |= record->candidates[m].failed_predicate == GATE_SOC_FLOOR;
+            capture->thermal |= record->candidates[m].failed_predicate == GATE_THERMAL_CEILING;
+            capture->residual |= record->candidates[m].failed_predicate == GATE_PROTECTED_RESIDUAL;
+        }
+    }
+    return true;
+}
+
+static bool load_and_replay(const char *path, ScenarioCapture *capture)
+{
+    static Scenario scenario;
+    static Governor governor;
+    GovernorConfig config = {0};
+    FILE *input = fopen(path, "r");
+    char error[128];
+    int subsystem;
+    bool loaded;
+    if (input == NULL) return false;
+    loaded = scenario_load_file(input, &scenario, error, sizeof(error));
+    fclose(input);
+    if (!loaded) return false;
+    config.alpha = PREDICTION_DEFAULT_ALPHA;
+    config.beta = PREDICTION_DEFAULT_BETA;
+    config.lookahead_ns = scenario.step_ns;
+    config.prediction_enabled = true;
+    config.self_cost_cap_ns = UINT64_MAX;
+    for (subsystem = 0; subsystem < N_SUBSYSTEMS; ++subsystem)
+        config.thermal_limit_mC[subsystem] = 100000;
+    capture->tasks = scenario.tasks.count;
+    capture->faults = scenario.fault_count;
+    capture->updates = scenario.update_count;
+    return governor_init(&governor, &scenario, &config) &&
+        replay_run(&scenario, &governor, NULL, capture_purpose, capture);
+}
+
+static void focused_catalog_has_minimal_purpose_evidence(void)
+{
+    ScenarioCapture capture = {0};
+    ASSERT_TRUE(load_and_replay("scenarios/low_soc_eclipse.scn", &capture));
+    ASSERT_TRUE(capture.eclipse && capture.soc);
+    ASSERT_EQ_INT(1, capture.tasks);
+    ASSERT_EQ_INT(0, capture.updates + capture.faults);
+    capture = (ScenarioCapture){0};
+    ASSERT_TRUE(load_and_replay("scenarios/high_thermal_load.scn", &capture));
+    ASSERT_TRUE(capture.thermal && capture.lower);
+    ASSERT_EQ_INT(1, capture.tasks);
+    ASSERT_EQ_INT(0, capture.updates + capture.faults);
+    capture = (ScenarioCapture){0};
+    ASSERT_TRUE(load_and_replay("scenarios/sudden_fault.scn", &capture));
+    ASSERT_TRUE(capture.fault);
+    ASSERT_EQ_INT(1, capture.tasks);
+    ASSERT_EQ_INT(1, capture.faults);
+    capture = (ScenarioCapture){0};
+    ASSERT_TRUE(load_and_replay("scenarios/communication_blackout.scn", &capture));
+    ASSERT_TRUE(capture.residual && !capture.soc);
+    ASSERT_EQ_INT(1, capture.tasks);
+    ASSERT_EQ_INT(0, capture.updates + capture.faults);
+    capture = (ScenarioCapture){0};
+    ASSERT_TRUE(load_and_replay("scenarios/competing_payload_tasks.scn", &capture));
+    ASSERT_TRUE(capture.residual && !capture.soc);
+    ASSERT_EQ_INT(2, capture.tasks);
+    ASSERT_EQ_INT(0, capture.updates + capture.faults);
+}
+
 int main(void)
 {
     RUN_TEST(normal_orbit_loads_complete_state_and_tasks);
@@ -90,5 +177,6 @@ int main(void)
     RUN_TEST(duplicate_initial_is_rejected);
     RUN_TEST(overflowing_duration_is_rejected);
     RUN_TEST(battery_capacity_above_ledger_range_is_rejected);
+    RUN_TEST(focused_catalog_has_minimal_purpose_evidence);
     return test_failures != 0;
 }

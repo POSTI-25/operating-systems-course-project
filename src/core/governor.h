@@ -7,9 +7,29 @@
 #include "utility.h"
 #include "sim/scenario.h"
 #include "platform/platform_ipc.h"
+#include "adapter/execution_adapter.h"
+#include "adapter/logger.h"
 #include <stdio.h>
 
 #define GOVERNOR_MAX_METRICS 10000
+
+typedef enum {
+    GOVERNOR_VARIANT_SAGE_FULL = 0,
+    GOVERNOR_VARIANT_FIXED_EDF,
+    GOVERNOR_VARIANT_GOMX_STYLE,
+    GOVERNOR_VARIANT_RANJBAR_STYLE
+} GovernorVariant;
+
+typedef struct {
+    uint8_t mode_mask;
+    uint8_t gate_mask;
+    uint8_t utility_term_mask;
+    uint8_t ledger_mask;
+    bool prediction_enabled;
+    bool immediate_fault_cycle;
+} GovernorVariantPolicy;
+
+bool governor_variant_policy(GovernorVariant variant, GovernorVariantPolicy *out);
 
 typedef struct {
     uint32_t task_id;
@@ -27,6 +47,7 @@ typedef struct {
     int64_t protected_reserve[LEDGER_DIMENSION_COUNT];
     uint16_t safety_margin_permille;
     bool prediction_enabled;
+    GovernorVariant variant;
     uint64_t test_injected_cpu_ns_per_task;
     uint64_t test_injected_prediction_cpu_ns;
 } GovernorConfig;
@@ -37,6 +58,7 @@ typedef struct {
     bool pending[SAGE_MAX_TASKS];
     bool commitment_active[SAGE_MAX_TASKS];
     RevalidationState revalidation[SAGE_MAX_TASKS];
+    ExecutionState execution[SAGE_MAX_TASKS];
     bool emergency_safe_mode;
     uint32_t emergency_task_id;
     uint64_t energy_refresh_epoch;
@@ -60,6 +82,8 @@ typedef struct {
     uint64_t pending_prediction_cpu_ns;
     uint64_t pending_prediction_wall_ns;
     uint64_t last_prediction_wall_ns;
+    LogRecord last_records[SAGE_MAX_TASKS];
+    size_t last_record_count;
 } Governor;
 
 typedef enum {
@@ -108,11 +132,16 @@ GovernorCycleResult governor_cycle(Governor *governor, uint64_t now_ns,
 GovernorCycleResult governor_cycle_with_fault_mask(Governor *governor,
                                                     uint64_t now_ns,
                                                     uint32_t fault_set_mask);
+bool governor_settle_execution_at(Governor *governor, uint64_t now_ns);
 size_t governor_commitment_count(const Governor *governor);
 const Commitment *governor_commitment_at(const Governor *governor, size_t index);
 bool governor_commitment_active(const Governor *governor, size_t task_index);
 const RevalidationState *governor_revalidation_state_at(const Governor *governor,
                                                         size_t task_index);
+const ExecutionState *governor_execution_at(const Governor *governor,
+                                            size_t task_index);
+const LogRecord *governor_log_record_at(const Governor *governor,
+                                        size_t index);
 bool governor_emergency_safe_mode(const Governor *governor);
 size_t governor_accuracy_count(const Governor *governor);
 const PredictionAccuracyEvent *governor_accuracy_at(const Governor *governor,

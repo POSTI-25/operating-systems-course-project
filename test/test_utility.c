@@ -160,6 +160,41 @@ static void deadline_urgency_uses_full_uint64_denominator(void)
     ASSERT_TRUE(selected.utility_score > 149.9 && selected.utility_score < 150.1);
 }
 
+static void masked_terms_leave_delivered_value_base_intact(void)
+{
+    Ledger ledger;
+    LedgerConfig setup = ledger_config();
+    Task task = { .task_id = 11, .nominal_exec_ns = 2,
+        .primary_subsystem = SUBSYSTEM_BUS };
+    TelemetryFrame telemetry;
+    GateContext gate = {0};
+    UtilityContext utility = {0};
+    Candidate candidate = { .task_id = 11, .mode = MODE_FULL,
+        .delivered_value = 100,
+        .predicted_cost = { .energy_cost_mJ = 50 } };
+    GateFilterResult filtered;
+    const SurvivorSet *survivors;
+    SelectionResult selected;
+    ASSERT_TRUE(ledger_init(&ledger, &setup));
+    ASSERT_TRUE(ledger_update_energy(&ledger, 800, 0, 0));
+    telemetry_frame_init(&telemetry);
+    telemetry.battery_soc_mV_pct.value = 800;
+    gate.telemetry = &telemetry;
+    gate.ledger = &ledger;
+    gate.absolute_deadline_ns = 10;
+    survivors = gate_filter(&candidate, 1, &task, &gate, &filtered);
+    utility.fault_flags = UINT32_C(1) << SUBSYSTEM_BUS;
+    utility.energy_capacity_mJ = 100;
+    ASSERT_TRUE(utility_select_masked(survivors, &task, &utility, 0, &selected));
+    ASSERT_TRUE(selected.utility_score == 100.0);
+    ASSERT_TRUE(utility_select_masked(survivors, &task, &utility,
+        UTILITY_TERM_FAULT, &selected));
+    ASSERT_TRUE(selected.utility_score == 200.0);
+    ASSERT_TRUE(utility_select_masked(survivors, &task, &utility,
+        UTILITY_TERM_ENERGY, &selected));
+    ASSERT_TRUE(selected.utility_score == 99.5);
+}
+
 static void exact_score_tie_prefers_full_mode(void)
 {
     Ledger ledger;
@@ -201,6 +236,7 @@ int main(void)
     RUN_TEST(option_a_uses_natural_denominators);
     RUN_TEST(fallback_deferred_then_rejected_then_emergency);
     RUN_TEST(deadline_urgency_uses_full_uint64_denominator);
+    RUN_TEST(masked_terms_leave_delivered_value_base_intact);
     RUN_TEST(exact_score_tie_prefers_full_mode);
     return test_failures != 0;
 }

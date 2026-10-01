@@ -3,6 +3,13 @@
 
 #include "gate.h"
 
+#define UTILITY_TERM_FAULT UINT8_C(1)
+#define UTILITY_TERM_DEADLINE UINT8_C(2)
+#define UTILITY_TERM_ENERGY UINT8_C(4)
+#define UTILITY_TERM_THERMAL UINT8_C(8)
+#define UTILITY_TERM_RESOURCE UINT8_C(16)
+#define UTILITY_TERM_ALL UINT8_C(31)
+
 typedef struct {
     uint64_t time_remaining_to_deadline_ns;
     uint64_t time_until_next_tick_ns;
@@ -32,5 +39,7 @@ bool utility_rank(const SurvivorSet *survivors, const Task *task,
                   const UtilityContext *context, SelectionResult *out);
 bool utility_select(const SurvivorSet *survivors, const Task *task,
                     const UtilityContext *context, SelectionResult *out);
+bool utility_select_masked(const SurvivorSet *survivors, const Task *task,
+    const UtilityContext *context, uint8_t term_mask, SelectionResult *out);
 
 #endif

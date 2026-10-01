@@ -8,6 +8,7 @@
 
 #define SAGE_PROVISIONAL_SELF_COST_CPU_PCT 0U
 #define SAGE_PROVISIONAL_SELF_COST_ENERGY_MJ 0U
+#define LEDGER_MASK_ALL UINT8_C(0x3f)
 
 typedef enum {
     LEDGER_CPU = 0,
@@ -69,6 +70,11 @@ bool ledger_can_reserve(const Ledger *ledger, uint8_t criticality_class,
                         ResourceDemand demand, uint64_t energy_cost_mJ);
 bool ledger_commit(Ledger *ledger, uint32_t task_id, uint8_t criticality_class,
                    ResourceDemand demand, uint64_t energy_cost_mJ);
+bool ledger_can_reserve_masked(const Ledger *ledger, uint8_t criticality_class,
+    ResourceDemand demand, uint64_t energy_cost_mJ, uint8_t dimension_mask);
+bool ledger_commit_masked(Ledger *ledger, uint32_t task_id,
+    uint8_t criticality_class, ResourceDemand demand, uint64_t energy_cost_mJ,
+    uint8_t dimension_mask);
 bool ledger_release_rate(Ledger *ledger, uint32_t task_id);
 bool ledger_release_stock(Ledger *ledger, uint32_t task_id);
 bool ledger_cancel_tentative(Ledger *ledger, uint32_t task_id);
