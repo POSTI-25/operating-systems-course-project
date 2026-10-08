@@ -1,4 +1,5 @@
 CC ?= gcc
+.DEFAULT_GOAL := all
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Werror -Isrc -Itest
 SANFLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
 CORE_SRC = src/platform/platform_clock.c src/platform/platform_wait.c src/platform/platform_ipc.c src/core/telemetry.c src/core/task_model.c src/core/ledger.c src/core/gate.c src/core/mode_generator.c src/core/utility.c src/core/prediction.c src/core/revalidation.c src/core/governor.c src/sim/scenario.c src/sim/simulator.c src/adapter/execution_adapter.c src/adapter/logger.c
@@ -7,7 +8,15 @@ UNIT_BINS = $(addprefix build/test_,$(UNIT_NAMES))
 SAN_BINS = $(addprefix build/san_test_,$(UNIT_NAMES))
 DECISION_SCENARIOS = normal_orbit low_soc_eclipse high_thermal_load sudden_fault communication_blackout competing_payload_tasks compound_stress false_alarm_restoration
 
-.PHONY: all test sanitize report clean
+.PHONY: all test sanitize report clean workstation
+
+workstation: build/frontend_runner
+
+build/frontend_runner: tools/frontend_runner.c test/replay.c $(CORE_SRC) $(wildcard src/core/*.h src/adapter/*.h src/platform/*.h src/sim/*.h test/replay.h) | build
+	$(CC) $(CFLAGS) tools/frontend_runner.c test/replay.c $(CORE_SRC) -o $@
+
+build/san_frontend_runner: tools/frontend_runner.c test/replay.c $(CORE_SRC) | build
+	$(CC) $(CFLAGS) $(SANFLAGS) $^ -o $@
 
 all: build/sage_rt build/golden_runner build/prediction_ab $(UNIT_BINS) build/measure_self_cost build/decision_golden_runner build/report_runner build/traceability_check
 

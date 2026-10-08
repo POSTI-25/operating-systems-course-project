@@ -4,7 +4,9 @@ SAGE-RT is a host-PC demonstration of how a spacecraft can choose work without s
 
 ## Build and check
 
-Use a POSIX environment with a C11 compiler (`gcc` or `clang`), GNU `make`, and standard `diff`, `grep`, and `mktemp` commands. There are no third-party libraries. On Windows, use WSL Ubuntu, not native PowerShell, for the build and demo. From PowerShell, enter WSL:
+For the browser-based decision inspector, see [the workstation guide](docs/workstation.md). It runs the actual C engine locally and provides reference replay, Gate/Ledger inspection, task-state playback, and the checked-in comparison table.
+
+Use a POSIX environment with a C11 compiler (`gcc` or `clang`), GNU `make`, and standard `diff`, `grep`, and `mktemp` commands. The C engine has no third-party libraries; the optional browser workstation uses Node.js and React. On Windows, use WSL Ubuntu, not native PowerShell, for the C build and command-line demo. From PowerShell, enter WSL:
 
 ```powershell
 wsl -d Ubuntu
@@ -95,7 +97,7 @@ Run these from the repository root after `make`. The golden files are compact, d
 | N4 — Reversible revalidation | `./build/decision_golden_runner scenarios/false_alarm_restoration.scn | grep -E 'PREDICTED_RISK|restoration=1|reason=COMPLETED'` — pause, Gate-approved FULL restoration, completion. |
 | N5 — Graduated modes | `grep -h -oE 'selected=(THROTTLED|DEGRADED)' golden/high_thermal_load.decisions.expected golden/low_soc_eclipse.decisions.expected` — heat throttles, low SOC degrades. |
 | N6 — Governor self-cost | `./build/sage_rt scenarios/normal_orbit.scn --tick-ms 100 | grep '^SELF_COST'` — measured maximum, cap, and protected reservation. |
-| N7 — Event-interrupt cadence | `./build/sage_rt scenarios/sudden_fault.scn --tick-ms 100 | grep 'trigger=FAULT'` — the fault cycle occurs between ticks; the CSV's GomX latency is **censored** at 9 ns, versus full 0 ns. |
+| N7 — Event-interrupt cadence | `./build/sage_rt scenarios/sudden_fault.scn --tick-ms 100 | grep 'trigger=FAULT'` — the fault cycle occurs between ticks; the CSV's GomX latency is **censored** at 1 ns, versus full 0 ns. |
 | N8 — Thermal and fault inputs | `grep -h -oE 'GATE_THERMAL_CEILING|trigger=FAULT' golden/high_thermal_load.decisions.expected golden/sudden_fault.decisions.expected` — heat gating and immediate fault response. The low-SOC/Ranjbar contrast is battery-model evidence, not N8 proof. |
 | N9 — Forecast feeding Gate | `./build/prediction_ab scenarios/prediction_trend.scn` — Holt SOC absolute error 234 versus persistence 270; see `low_soc_eclipse` golden for SOC gating. |
 | N10 — Emergency fallback | `grep 'sim_ns=12.*EMERGENCY_SAFE_MODE' golden/compound_stress.decisions.expected` — class-0 executing modes fail protected-residual checks, so dispatch stops. |

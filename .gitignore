@@ -2,3 +2,5 @@ build/
 output/
 *.exe
 .worktrees/
+node_modules/
+frontend/dist/

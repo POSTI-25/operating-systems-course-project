@@ -1,0 +1,26 @@
+{
+  "name": "sage-rt-workstation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "node bridge/server.mjs",
+    "build": "tsc -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "test:ui": "node --test bridge/*.test.mjs",
+    "test:e2e": "playwright test",
+    "test:engine": "node --test bridge/engine.integration.mjs"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
