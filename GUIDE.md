@@ -2,7 +2,7 @@
 
 SAGE-RT is a host-PC demonstration of how a spacecraft can choose work without spending resources it needs to stay safe. It watches simulated battery, heat, faults, and other limits; chooses how much of each queued task to run; and can pause a choice when its safety assumptions stop holding. Essential attitude-control work gets protected resources. The point is to show safe, revocable scheduling when several constraints go bad together—not to control flight hardware.
 
-## Build and check
+## Build and check 
 
 For the browser-based decision inspector, see [the workstation guide](docs/workstation.md). It runs the actual C engine locally and provides reference replay, Gate/Ledger inspection, task-state playback, and the checked-in comparison table.
 
@@ -85,7 +85,7 @@ CSV columns, in file order:
 
 The scripted SOC is exogenous: `energy_survival_time_ns` is not proof that one scheduler saved battery. A censored recovery latency is a bound, not a completed recovery measurement.
 
-## Show N1–N10 quickly
+## Show N1–N10 quickly 
 
 Run these from the repository root after `make`. The golden files are compact, deterministic decision traces; the CSV rows are the calibrated comparison. `make test` also runs `build/traceability_check` across all ten items.
 
@@ -113,3 +113,16 @@ Run these from the repository root after `make`. The golden files are compact, d
 - `docs/`: comparison report and design history; `PRD.md`: authoritative contracts and scope.
 
 Keep this repository private; do not publish or push it publicly before the disclosure decision described in PRD §19.
+
+
+
+wsl -d Ubuntu -- bash -lc "cd '/mnt/d/jenevi/FALL SEM 26-27/OS/project' && make workstation"
+npm.cmd install
+npm.cmd run build
+npm.cmd start
+
+
+npm.cmd start
+
+
+http://127.0.0.1:4317 

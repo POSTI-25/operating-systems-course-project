@@ -12,7 +12,7 @@
 #define GATE_MASK_DEADLINE UINT8_C(8)
 #define GATE_MASK_ALL UINT8_C(15)
 
-typedef enum {
+typedef enum { 
     GATE_PREDICATE_NONE = 0,
     GATE_SOC_FLOOR = 1,
     GATE_THERMAL_CEILING = 2,

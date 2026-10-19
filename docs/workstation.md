@@ -2,6 +2,16 @@
 
 The first frontend release runs reference replays through the existing C engine and displays their actual decision records. It adds no scheduling policy. It supports all four variant masks, the scenario catalog, task-state timelines, Gate verdicts, selected utility, Ledger changes, observed cycle telemetry, stored commitment assumptions, final execution settlement, and capture export. The comparison workspace reads the checked-in Phase 5 CSV.
 
+## Visual decision walkthrough
+
+Inspect opens a guided explanation of each captured cycle. **Play walkthrough** advances through six explanations before moving to the next cycle: observed inputs, forecast/risk evidence, Gate filtering, mode selection, resource accounting, and task state. Click a step directly, use **Next explanation**, or use the cycle arrows and event bookmarks. Manual navigation pauses playback. Playback speed changes the presentation pace, not simulated execution.
+
+Input tiles highlight changes since the preceding observed cycle, including source timestamps and quality. Gate cards show actual candidate verdicts and first failures. Selection shows only the emitted mode and selected utility. Resource bars compare exact before/after Ledger snapshots; sensor squares represent mask bits. Task lanes group all tasks by their recorded state, with execution progress preserved across pauses. The task selector synchronizes the explanation, remaining-work chart, and resource view.
+
+An event navigator links input changes and task transitions. The battery plot shows recorded observations and the protected SOC floor; amber identifies the selected task's recorded predicted-risk window. The remaining-work plot stays flat while work is paused and slopes down during execution. Faint lines show later results in the same capture, not forecasts. The scheduling map uses elapsed simulation time for interval widths; the original per-cycle lifecycle and raw tables remain under **Detailed decision evidence**.
+
+These are explanatory views of published records, not instrumentation of individual C calls. They do not invent per-candidate forecast curves, missing utility scores, execution-thread assignments, or unpublished intermediate plans. Forecast assumptions are labeled with their commitment time and can be older than the selected cycle. Equal-time fault/tick cycles remain separate in the event navigator. Final settlement has no fabricated admission, forecast, or Ledger snapshot.
+
 ## Build and launch on this Windows workspace
 
 In PowerShell at the project root, build the new observation executable in WSL Ubuntu:
@@ -19,8 +29,8 @@ For frontend development, `npm.cmd run dev` runs the local API and Vite together
 
 ## Professor demonstration
 
-1. In **Configure**, choose **Low-SOC eclipse**, keep **SAGE-RT full**, and generate a reference run. The inspector shows FULL/THROTTLED eliminated on SOC, DEGRADED selected, and eventual completion with 360 delivered value.
-2. Choose **False-alarm restoration** and run again. Use **Predicted risk**, **Restoration**, and **Completion** bookmarks: t=10 pauses with 10 ns remaining, t=24 restores FULL, and t=34 completes with 900 value. Pausing playback pauses only the inspection cursor.
+1. In **Configure**, choose **Low-SOC eclipse**, keep **SAGE-RT full**, and generate a reference run. Select **Safety Gate** to see FULL/THROTTLED eliminated on SOC and DEGRADED survive. **Choose a mode** shows the selection; **Account resources** shows its reservations. The Completion bookmark and **Task state** show 360 delivered value.
+2. Choose **False-alarm restoration** and run again. Use **Predicted risk**, **Restoration**, and **Completion** bookmarks: t=10 pauses with 10 ns remaining, t=24 restores FULL, and t=34 completes with 900 value. Follow the flat remaining-work plot through the pause and the resumed slope afterward. **Play walkthrough** explains each cycle before advancing; pausing affects only presentation. Expand **Detailed decision evidence** for the original tables and raw records.
 3. Choose **Compound stress**. Inspect the fault cycle at t=3 and CPU shedding at t=12. This fixture demonstrates emergency behavior, not critical completion; it ends before the 20 ns critical task can finish.
 4. Open **Compare & verify**. Discuss the safety/work tradeoff and the accepted lack of strict dominance. Censored recovery is displayed as a lower bound; the sudden-fault bound for tick-only baselines is 1 ns, not 9 ns.
 5. Export the JSON capture or raw trace for review. Every capture includes the exact scenario source and SHA-256 hashes of both the scenario and observation executable. A local copy is also written under ignored `output/ui-runs/`.
@@ -46,4 +56,4 @@ Browser tests require Playwright Chromium (`npx.cmd playwright install chromium`
 
 ## Remaining roadmap
 
-Live SSE streaming and process cancellation, validated edits to separate experiment copies, saved-capture import, fresh report generation, browser-triggered verification, richer prediction exports and sensor-bit views remain subsequent milestones. This release does not offer runtime fault injection, engine pause/resume, a scheduling implementation in JavaScript, or simulated live metrics.
+Live SSE streaming and process cancellation, validated edits to separate experiment copies, saved-capture import, fresh report generation, browser-triggered verification and richer prediction exports remain subsequent milestones. This release does not offer runtime fault injection, engine pause/resume, a scheduling implementation in JavaScript, or simulated live metrics.
