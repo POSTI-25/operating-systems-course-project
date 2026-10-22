@@ -1,15 +1,18 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { label, number, policy } from './domain';
 import type { Cycle, Decision, Ledger, Phase, Run, State, Task } from './domain';
 import { bounded, changedChannels, channelValue, cycleTitle, decisionStory, eventIndices, progress, ratio, steps } from './walkthrough-model';
 import { ExecutionMap, HistoryPlots } from './TracePlots';
+import { MissionScene, ReadingGuide } from './MissionMap';
+import { DecisionBoard } from './DecisionBoard';
 import './walkthrough.css';
 
-interface Props { run: Run; cursor: number; move: (index: number) => void; taskId: string; select: (id: string) => void; step: number; setStep: (step: number) => void }
+interface Props { run: Run; cursor: number; move: (index: number) => void; taskId: string; select: (id: string) => void; step: number; setStep: (step: number) => void; playing: boolean }
 const channelNames: Record<string, string> = { BATTERY_SOC_MV_PCT: 'Battery charge', CPU_AVAIL_PCT: 'CPU available', 'TEMP_MC[2]': 'Payload temperature', FAULT_FLAGS: 'Subsystem faults', COMM_WINDOW_OPEN: 'Communication', MEM_AVAIL_KB: 'Memory available' };
 const phases: Phase[] = ['PENDING', 'RUNNING', 'PAUSED', 'COMPLETE', 'REJECTED'];
 
-export function Walkthrough({ run, cursor, move, taskId, select, step, setStep }: Props) {
+export function Walkthrough({ run, cursor, move, taskId, select, step, setStep, playing }: Props) {
+  const [view, setView] = useState<'whiteboard' | 'technical' | 'story'>('whiteboard');
   const cycle = run.cycles[cursor];
   const final = !cycle;
   const task = run.scenario.tasks.find(t => t.id === taskId);
@@ -25,20 +28,25 @@ export function Walkthrough({ run, cursor, move, taskId, select, step, setStep }
     if (rail && active) rail.scrollLeft += active.getBoundingClientRect().left - rail.getBoundingClientRect().left - (rail.clientWidth - active.clientWidth) / 2;
   }, [cursor, run.id]);
   return <div className="walkthrough">
-    <section className="walkthrough-panel" aria-label="Guided decision walkthrough">
-      <div className="walkthrough-intro"><div><span className="eyebrow">FOLLOW THE ENGINE’S DECISION</span><h2>From conditions to execution</h2><p>Step through the evidence behind this cycle, then move forward in simulation time.</p></div><label className="walkthrough-task">Inspect task<select aria-label="Walkthrough task" value={taskId} onChange={e => select(e.target.value)}>{run.scenario.tasks.map(t => <option key={t.id} value={t.id}>T{t.id} · {t.subsystem} · class {t.criticality}</option>)}</select></label></div>
+    <section className={`walkthrough-panel ${view === 'whiteboard' ? 'whiteboard-mode' : ''}`} aria-label="Guided decision walkthrough">
+      <div className="walkthrough-intro"><div><span className="eyebrow">FOLLOW THE ENGINE’S DECISION</span><h2>From conditions to execution</h2><p>One job. One decision. Draw the need, the limits, and what happens next.</p></div><label className="walkthrough-task">Inspect task<select aria-label="Walkthrough task" value={taskId} onChange={e => select(e.target.value)}>{run.scenario.tasks.map(t => <option key={t.id} value={t.id}>T{t.id} · {t.subsystem} · class {t.criticality}</option>)}</select></label></div>
+      <div className="lesson-view-switch" role="group" aria-label="Walkthrough presentation"><span>Explain with</span><button aria-pressed={view === 'whiteboard'} onClick={() => setView('whiteboard')}>Whiteboard lesson</button><button aria-pressed={view === 'technical'} onClick={() => setView('technical')}>Technical view</button><button aria-pressed={view === 'story'} onClick={() => setView('story')}>Space analogy view</button></div>
       <div className="cycle-story"><span className={`story-symbol ${state?.phase.toLowerCase()}`}>{final ? '✓' : cycle?.trigger === 'FAULT' ? '!' : state?.phase === 'PAUSED' ? 'Ⅱ' : '→'}</span><div><strong>{final ? 'Final execution settlement' : cycleTitle(cycle)}</strong><p>{story}</p></div><span className="story-time">t = {cycle?.time ?? run.final.time}<small>sim ns</small></span></div>
       <nav className="process-steps" aria-label="Decision explanation steps">{steps.map((name, index) => <button key={name} className={`${index === step ? 'active-step' : ''} ${index < step ? 'read-step' : ''}`} aria-current={index === step ? 'step' : undefined} onClick={() => setStep(index)}><span>{String(index + 1).padStart(2, '0')}</span><strong>{name}</strong><small>{['What did it observe?', 'Why reconsider?', 'What survives?', 'What is admitted?', 'What changes?', 'Where is the task?'][index]}</small></button>)}</nav>
-      <div className="step-content" key={`${run.id}-${cursor}-${taskId}-${step}`}>
+      {view === 'whiteboard' && <div className="whiteboard-wrap"><DecisionBoard run={run} cursor={cursor} taskId={taskId} select={select} move={move} step={step} playing={playing} /></div>}
+      {view === 'story' && <div className="mission-scene-wrap"><MissionScene run={run} cycle={cycle} task={task} decision={decision} state={state} step={step} /></div>}
+      {view !== 'whiteboard' && <div className="step-content" key={`${run.id}-${cursor}-${taskId}-${step}`}>
+        <div className="evidence-heading"><h3>The evidence behind the story</h3><span>Selected task T{taskId} · {final ? 'final state' : `cycle ${cycle?.sequence}`}</span></div>
         {step === 0 && <InputStep cycle={cycle} previous={previous} task={task} />}
         {step === 1 && <RiskStep cycle={cycle} decision={decision} taskId={taskId} variant={run.variant} />}
         {step === 2 && <GateStep decision={decision} task={task} final={final} overrun={cycle?.result === 'OVERRUN'} />}
         {step === 3 && <SelectionStep decision={decision} final={final} />}
         {step === 4 && <ResourceStep decision={decision} />}
         {step === 5 && <TaskBoard run={run} cycle={cycle} taskId={taskId} select={select} />}
-      </div>
+      </div>}
       <div className="step-footer"><span>Explanation {step + 1} / {steps.length} · captured evidence, not processor timing</span><div><button className="secondary" disabled={step === 0} onClick={() => setStep(step - 1)}>← Previous explanation</button><button className="primary" disabled={final && step === steps.length - 1} onClick={() => step < steps.length - 1 ? setStep(step + 1) : move(Math.min(run.cycles.length, cursor + 1))}>{step < steps.length - 1 ? 'Next explanation →' : 'Next cycle →'}</button></div></div>
     </section>
+    <details className="whiteboard-history" open={view !== 'whiteboard'}><summary>Whole-run timeline and plots <span>Open after the step-by-step lesson</span></summary>
     <section className="event-story" aria-label="Run event navigator"><div className="visual-heading"><div><span className="eyebrow">CAUSE & EFFECT ACROSS THE CAPTURE</span><h3>Jump to an input change or decision</h3></div><span className="muted">Select a moment to explain it</span></div><div className="event-strip" ref={eventRail}>{events.map(index => {
       const c = run.cycles[index];
       const changed = changedChannels(c, run.cycles[index - 1]);
@@ -46,6 +54,8 @@ export function Walkthrough({ run, cursor, move, taskId, select, step, setStep }
     })}<button className={final ? 'active-event' : ''} onClick={() => move(run.cycles.length)}><span className="mono">t={run.final.time}<small>final snapshot</small></span><strong>Execution settled</strong><small>No additional admission</small></button></div></section>
     <HistoryPlots run={run} cursor={cursor} task={task} />
     <ExecutionMap run={run} cursor={cursor} taskId={taskId} select={select} />
+    </details>
+    <ReadingGuide />
   </div>;
 }
 

@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { descriptions, download, label, number, policy, significant, titles } from './domain';
 import type { Channel, Decision, Ledger, Metric, Page, Run, Scenario, Variant } from './domain';
 import { Walkthrough } from './Walkthrough';
+import { SchedulingLab } from './SchedulingLab';
+import { SchedulerExplorer } from './SchedulerExplorer';
+import { describeEvent, MissionMap, ScenarioBrief } from './MissionMap';
 import { steps } from './walkthrough-model';
 import './styles.css';
 
@@ -18,7 +21,7 @@ function PanelTitle({ eyebrow, title, extra }: { eyebrow: string; title: string;
 function Empty({ title, children }: { title: string; children: React.ReactNode }) { return <div className="empty"><span className="empty-symbol" aria-hidden="true">[ / ]</span><h2>{title}</h2><p>{children}</p></div>; }
 
 function App() {
-  const [page, setPage] = useState<Page>('configure');
+  const [page, setPage] = useState<Page>('lab');
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [scenarioId, setScenarioId] = useState('low_soc_eclipse');
   const [variant, setVariant] = useState<Variant>('full');
@@ -31,7 +34,7 @@ function App() {
   const [step, setStep] = useState(0);
   const [taskId, setTaskId] = useState('1');
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(1500);
+  const [speed, setSpeed] = useState(8000);
   const scenario = scenarios.find(s => s.id === scenarioId);
   useEffect(() => {
     let alive = true;
@@ -53,10 +56,13 @@ function App() {
   }, [playing, speed, run, cursor, step]);
   useEffect(() => { if (page !== 'inspect') setPlaying(false); }, [page]);
   async function execute() {
+    await executeFor(scenarioId, variant, page === 'lab' ? 'lab' : 'inspect');
+  }
+  async function executeFor(nextScenario: string, nextVariant: Variant, destination: Page) {
     setBusy(true); setError(''); setPlaying(false);
     try {
-      const capture = await api<Run>('runs', { scenario: scenarioId, variant });
-      setRun(capture); setCursor(0); setStep(0); setTaskId(capture.scenario.tasks[0]?.id ?? '1'); setPage('inspect');
+      const capture = await api<Run>('runs', { scenario: nextScenario, variant: nextVariant });
+      setRun(capture); setCursor(0); setStep(0); setTaskId(capture.scenario.tasks[0]?.id ?? '1'); setPage(destination);
     } catch (e) { setError(e instanceof Error ? e.message : 'Replay failed.'); }
     finally { setBusy(false); }
   }
@@ -65,15 +71,17 @@ function App() {
   function selectTask(id: string) { setPlaying(false); setTaskId(id); setStep(0); }
   return <div className="application">
     <header className="app-header">
-      <a className="identity" href="#" onClick={e => { e.preventDefault(); setPage('configure'); }} aria-label="SAGE-RT configuration"><span className="brandmark" aria-hidden="true">S<span>↗</span></span><span><strong>SAGE<span className="brand-dash">—</span>RT</strong><small>DECISION WORKSTATION</small></span></a>
-      <nav aria-label="Workspaces">{(['configure', 'inspect', 'compare'] as Page[]).map((item, i) => <button key={item} className={page === item ? 'nav-item active' : 'nav-item'} onClick={() => setPage(item)} aria-current={page === item ? 'page' : undefined}><span className="nav-number">0{i + 1}</span>{item === 'compare' ? 'Compare & verify' : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
+      <a className="identity" href="#" onClick={e => { e.preventDefault(); setPage('lab'); }} aria-label="SAGE-RT walkthrough"><span className="brandmark" aria-hidden="true">S<span>↗</span></span><span><strong>SAGE<span className="brand-dash">—</span>RT</strong><small>DECISION WORKSTATION</small></span></a>
+      <nav aria-label="Workspaces">{(['lab', 'configure', 'inspect', 'compare'] as Page[]).map((item, i) => <button key={item} className={page === item ? 'nav-item active' : 'nav-item'} onClick={() => setPage(item)} aria-current={page === item ? 'page' : undefined}><span className="nav-number">0{i}</span>{item === 'lab' ? 'Walkthrough' : item === 'compare' ? 'Compare & verify' : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
       <span className={`connection ${health ? '' : 'disconnected'}`}><i />{health ? 'LOCAL BRIDGE CONNECTED' : 'BRIDGE OFFLINE'}</span>
     </header>
     <div className="context-bar"><span><span className="context-label">ENVIRONMENT</span>Host-PC simulation <span className="separator">/</span> C11 · POSIX</span><span className="mono">{run ? `CAPTURE ${run.id.slice(0, 8)}` : 'NO ACTIVE CAPTURE'}<span className="separator">/</span>Reference replay</span></div>
     {error && <div className="alert" role="alert"><strong>Operation failed.</strong> {error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
     {health && !health.engineReady && <div className="notice"><strong>Observation runner not built.</strong> In WSL Ubuntu, run <code>make workstation</code> from this checkout. Configuration and checked-in comparison remain available.</div>}
     <main>
-      {page === 'configure' && <Configure scenarios={scenarios} scenario={scenario} selected={scenarioId} select={setScenarioId} variant={variant} setVariant={setVariant} execute={execute} busy={busy} ready={!!health?.engineReady} />}
+      {page === 'lab' && <SchedulerExplorer scenarios={scenarios} scenarioId={scenarioId} variant={variant} choose={(nextScenario, nextVariant) => { setScenarioId(nextScenario); setVariant(nextVariant); if (run && health?.engineReady && !busy) void executeFor(nextScenario, nextVariant, 'lab'); }} run={run} execute={execute} busy={busy} ready={!!health?.engineReady} taskId={taskId} move={move} select={selectTask} guide={() => setPage('mission')} />}
+      {page === 'mission' && <MissionMap configure={(scenario = 'false_alarm_restoration') => { setScenarioId(scenario); setVariant('full'); setPage('configure'); }} />}
+      {page === 'configure' && <Configure scenarios={scenarios} scenario={scenario} selected={scenarioId} select={setScenarioId} variant={variant} setVariant={setVariant} execute={execute} busy={busy} ready={!!health?.engineReady} learn={() => setPage('mission')} />}
       {page === 'inspect' && (run ? <Inspector run={run} cursor={cursor} move={move} taskId={taskId} setTaskId={selectTask} playing={playing} setPlaying={setPlaying} speed={speed} setSpeed={setSpeed} step={step} setStep={explainStep} /> : <Empty title="A decision needs a run.">Choose a scenario in Configure and generate a reference replay. This workspace will show the engine’s actual decisions, resource reservations and task transitions.<br /><button className="primary" onClick={() => setPage('configure')}>Configure an experiment →</button></Empty>)}
       {page === 'compare' && <Compare metrics={metrics} />}
     </main>
@@ -81,10 +89,11 @@ function App() {
   </div>;
 }
 
-function Configure({ scenarios, scenario, selected, select, variant, setVariant, execute, busy, ready }: { scenarios: Scenario[]; scenario?: Scenario; selected: string; select: (id: string) => void; variant: Variant; setVariant: (v: Variant) => void; execute: () => void; busy: boolean; ready: boolean }) {
+function Configure({ scenarios, scenario, selected, select, variant, setVariant, execute, busy, ready, learn }: { scenarios: Scenario[]; scenario?: Scenario; selected: string; select: (id: string) => void; variant: Variant; setVariant: (v: Variant) => void; execute: () => void; busy: boolean; ready: boolean; learn: () => void }) {
   const p = policy[variant];
   return <>
     <div className="page-heading"><div><div className="eyebrow">01 / EXPERIMENT SETUP</div><h1>Decisions before dispatch.</h1><p>Choose the conditions. Inspect what survives the safety Gate.</p></div><span className="heading-note">ENGINEERING LABORATORY<br /><strong>REFERENCE REPLAY / VIRTUAL CLOCK</strong></span></div>
+    <section className="mission-entry" aria-label="Start the project walkthrough"><div><h2>Learn scheduling, one drawing at a time.</h2><p>Start with limited energy. Then learn resource sharing, pausing and resuming.<button className="text-button" onClick={() => { select('false_alarm_restoration'); setVariant('full'); }}>Choose the recommended demo</button></p><div className="lesson-shortcuts"><button onClick={() => { select('low_soc_eclipse'); setVariant('full'); }}>1 · Fit a smaller mode</button><button onClick={() => { select('competing_payload_tasks'); setVariant('full'); }}>2 · Share CPU between jobs</button><button onClick={() => { select('false_alarm_restoration'); setVariant('full'); }}>3 · Pause and resume safely</button></div></div><button className="secondary" onClick={learn}>Explore the mission map ↗</button></section>
     <div className="setup-grid">
       <section className="scenario-list"><PanelTitle eyebrow="INPUT CATALOG" title="Scenario fixtures" extra={<span className="count">{scenarios.length || '—'}</span>} />
         <div className="scenario-options">{scenarios.map((s, i) => <button key={s.id} onClick={() => select(s.id)} className={`scenario-option ${selected === s.id ? 'selected' : ''}`} aria-pressed={selected === s.id}><span className="scenario-index">{String(i + 1).padStart(2, '0')}</span><span><strong>{titles[s.id] ?? s.name}</strong><small>{s.tasks.length} task{s.tasks.length !== 1 ? 's' : ''} · {s.duration} sim ns{s.id === 'prediction_trend' ? ' · A/B fixture' : ''}</small></span><span className="option-arrow">→</span></button>)}</div>
@@ -93,10 +102,11 @@ function Configure({ scenarios, scenario, selected, select, variant, setVariant,
       <section className="scenario-detail">
         {scenario ? <><PanelTitle eyebrow="SELECTED INPUT" title={titles[scenario.id] ?? scenario.name} extra={<span className="file-label">.scn</span>} /><p className="scenario-description">{descriptions[scenario.id]}</p>
           <div className="spec-strip"><div><small>DURATION</small><strong>{scenario.duration}<span> sim ns</span></strong></div><div><small>TICK STEP</small><strong>{scenario.step}<span> sim ns</span></strong></div><div><small>SOC FLOOR</small><strong>{Number(scenario.socFloor) / 10}<span>%</span></strong></div><div><small>BATTERY CAPACITY</small><strong>{number(scenario.batteryCapacity)}<span> mJ</span></strong></div></div>
+          <ScenarioBrief scenario={scenario} />
           <div className="section-heading"><h3>Task & mission model</h3><span className="muted">One-shot execution</span></div>
           <div className="table-scroll"><table><thead><tr><th>Task / subsystem</th><th>Class</th><th>Execution</th><th>Deadline</th><th>Value</th></tr></thead><tbody>{scenario.tasks.map(task => <tr key={task.id}><td><strong className="mono">T{task.id}</strong><span className="subsystem">{task.subsystem}</span></td><td><span className={task.criticality === '0' ? 'critical-label' : 'mono'}>{task.criticality === '0' ? '0 · critical' : task.criticality}</span></td><td className="mono">{task.duration} ns</td><td className="mono">{task.deadline} ns</td><td className="mono">{task.value}</td></tr>)}</tbody></table></div>
           <div className="section-heading"><h3>Scheduled input changes</h3><span className="muted">{scenario.events.length} directives</span></div>
-          {scenario.events.length ? <div className="input-events">{scenario.events.map((event, i) => <div key={i}><span className="event-marker" /><span className="mono event-time">{event.type === 'ORBIT' ? 'epoch' : 't'} = {event.time}</span><span className="event-type">{event.type}</span><code>{event.detail}</code></div>)}</div> : <p className="muted inset">No explicit event directives in this fixture.</p>}
+          {scenario.events.length ? <div className="input-events">{scenario.events.map((event, i) => <div key={i}><span className="event-marker" /><span className="mono event-time">{event.type === 'ORBIT' ? 'epoch' : 't'} = {event.time}</span><span className="event-type">{event.type}</span><code>{describeEvent(event)}</code></div>)}</div> : <p className="muted inset">No explicit event directives in this fixture.</p>}
           {scenario.id === 'compound_stress' && <p className="technical-note">This 12 ns fixture demonstrates shedding and Emergency Safe Mode. The critical task needs 20 ns; critical completion is not its exit condition.</p>}
           <details className="source-details"><summary>Inspect scenario source <span className="mono">{scenario.id}.scn</span></summary><pre>{scenario.raw}</pre></details>
         </> : <Empty title="Loading inputs">Reading the local scenario catalog…</Empty>}
@@ -113,6 +123,7 @@ function Configure({ scenarios, scenario, selected, select, variant, setVariant,
 }
 
 function Inspector({ run, cursor, move, taskId, setTaskId, playing, setPlaying, speed, setSpeed, step, setStep }: { run: Run; cursor: number; move: (i: number) => void; taskId: string; setTaskId: (id: string) => void; playing: boolean; setPlaying: (v: boolean) => void; speed: number; setSpeed: (v: number) => void; step: number; setStep: (index: number) => void }) {
+  const [presentation, setPresentation] = useState<'lab' | 'evidence'>('lab');
   const final = cursor === run.cycles.length;
   const cycle = final ? null : run.cycles[cursor];
   const states = final ? run.final.states : cycle!.states;
@@ -125,9 +136,12 @@ function Inspector({ run, cursor, move, taskId, setTaskId, playing, setPlaying, 
   function bookmark(kind: 'risk' | 'restore' | 'fault' | 'complete') { const i = run.cycles.findIndex(c => kind === 'fault' ? c.trigger === 'FAULT' : c.decisions.some(d => kind === 'risk' ? d.invalidation?.cause === 'PREDICTED_RISK' : kind === 'restore' ? d.restoration : d.before !== 'COMPLETE' && d.after === 'COMPLETE')); if (i >= 0) move(i); }
   return <>
     <div className="page-heading compact"><div><span className="eyebrow">02 / DECISION INSPECTION</span><h1>{titles[run.scenario.id] ?? run.scenario.name}</h1><p>{policy[run.variant].name} <span className="separator">/</span> Actual C-engine capture <span className="separator">/</span> Reference replay</p></div><button className="secondary" onClick={() => download(`${run.scenario.id}-${run.variant}.json`, JSON.stringify(run, null, 2))}><Arrow>Export capture</Arrow></button></div>
-    <div className="playback"><div className="playback-buttons"><button aria-label="Previous cycle" disabled={cursor === 0} onClick={() => move(cursor - 1)}>←</button><button className="play-button" onClick={() => { if (final) move(0); setPlaying(!playing); }}>{playing ? 'Pause walkthrough' : 'Play walkthrough'}</button><button aria-label="Next cycle" disabled={final} onClick={() => move(cursor + 1)}>→</button></div><label className="cursor-slider"><span className="mono">{final ? 'FINAL' : `CYCLE ${cycle!.sequence}`}</span><input aria-label="Inspection cursor" type="range" min={0} max={run.cycles.length} value={cursor} onChange={e => move(Number(e.target.value))} /></label><label className="speed-label">Per step<select aria-label="Playback speed" value={speed} onChange={e => setSpeed(Number(e.target.value))}><option value={3000}>Slow</option><option value={1500}>Normal</option><option value={500}>Fast</option></select></label><button className="text-button" onClick={nextEvent} disabled={final}>Next event ↗</button><span className="time-readout">t = <strong>{time}</strong> sim ns</span></div>
+    <div className="inspector-presentation" role="group" aria-label="Inspector presentation"><button aria-pressed={presentation === 'lab'} onClick={() => { setPlaying(false); setPresentation('lab'); }}>Interactive lab</button><button aria-pressed={presentation === 'evidence'} onClick={() => { setPlaying(false); setPresentation('evidence'); }}>Evidence & prior views</button></div>
+    {presentation === 'lab' ? <SchedulingLab run={run} taskId={taskId} move={move} select={setTaskId} /> : <>
+    <div className="playback"><div className="playback-buttons"><button aria-label="Previous cycle" disabled={cursor === 0} onClick={() => move(cursor - 1)}>←</button><button className="play-button" onClick={() => { if (final) move(0); setPlaying(!playing); }}>{playing ? 'Pause walkthrough' : 'Play walkthrough'}</button><button aria-label="Next cycle" disabled={final} onClick={() => move(cursor + 1)}>→</button></div><label className="cursor-slider"><span className="mono">{final ? 'FINAL' : `CYCLE ${cycle!.sequence}`}</span><input aria-label="Inspection cursor" type="range" min={0} max={run.cycles.length} value={cursor} onChange={e => move(Number(e.target.value))} /></label><label className="speed-label">Per step<select aria-label="Playback speed" value={speed} onChange={e => setSpeed(Number(e.target.value))}><option value={8000}>Read along (8s)</option><option value={3000}>Slow</option><option value={1500}>Normal</option><option value={500}>Fast</option></select></label><button className="text-button" onClick={nextEvent} disabled={final}>Next event ↗</button><span className="time-readout">t = <strong>{time}</strong> sim ns</span></div>
     <div className="inspection-notes"><span><i className="status-square" />{final ? 'FINAL EXECUTION SETTLEMENT' : `${cycle!.trigger} / ${cycle!.result}`}</span><span>{cycle?.emergency ? <Badge value="EMERGENCY_SAFE_MODE" /> : 'Captured state · engine is not running during playback'}</span><div className="bookmarks">{(['risk', 'restore', 'fault', 'complete'] as const).map(kind => <button key={kind} onClick={() => bookmark(kind)} disabled={!run.cycles.some(c => kind === 'fault' ? c.trigger === 'FAULT' : c.decisions.some(d => kind === 'risk' ? d.invalidation?.cause === 'PREDICTED_RISK' : kind === 'restore' ? d.restoration : d.before !== 'COMPLETE' && d.after === 'COMPLETE'))}>{kind === 'risk' ? 'Predicted risk' : kind === 'restore' ? 'Restoration' : kind === 'fault' ? 'Fault cycle' : 'Completion'}</button>)}</div></div>
-    <Walkthrough run={run} cursor={cursor} move={move} taskId={taskId} select={setTaskId} step={step} setStep={setStep} />
+    <Walkthrough run={run} cursor={cursor} move={move} taskId={taskId} select={setTaskId} step={step} setStep={setStep} playing={playing} />
+    </>}
     <details className="technical-evidence"><summary>Detailed decision evidence <span>Cycle snapshots · Gate table · Ledger · telemetry · raw record</span></summary>
     <section className="timeline-panel"><PanelTitle eyebrow="EXECUTION STATE" title="Task lifecycles" extra={<span className="muted">Each cell is one decision cycle, not equal elapsed time</span>} /><div className="timeline-scroll"><div className="timeline"><div className="timeline-label">TASK / CLASS</div><div className="timeline-cells timeline-times">{run.cycles.map((c, i) => <button key={c.sequence} className={cursor === i ? 'time-cell current' : 'time-cell'} onClick={() => move(i)} title={`Cycle ${c.sequence}, t=${c.time}, ${c.trigger}`}>{c.time}{c.trigger === 'FAULT' && <span>F</span>}</button>)}<button className={final ? 'time-cell current' : 'time-cell'} onClick={() => move(run.cycles.length)}>end</button></div>{run.scenario.tasks.map(t => <React.Fragment key={t.id}><button className={`timeline-label task-select ${taskId === t.id ? 'selected-task' : ''}`} onClick={() => setTaskId(t.id)}><strong>T{t.id}</strong><span>{t.subsystem}<small>CLASS {t.criticality}</small></span></button><div className="timeline-cells">{run.cycles.map((c, i) => { const s = c.states.find(s => s.task === t.id); return <button key={c.sequence} onClick={() => { setTaskId(t.id); move(i); }} className={`state-cell ${s?.phase.toLowerCase()} ${i === cursor && t.id === taskId ? 'selected-cell' : ''}`} title={`Task ${t.id}: ${s?.phase}, ${s?.remaining} ns remaining, cycle ${c.sequence}`} aria-label={`Task ${t.id}, cycle ${c.sequence}, ${s?.phase}`}>{s?.phase === 'RUNNING' ? 'R' : s?.phase === 'PAUSED' ? 'Ⅱ' : s?.phase === 'COMPLETE' ? '✓' : s?.phase === 'REJECTED' ? '×' : '·'}</button>; })}<button onClick={() => { setTaskId(t.id); move(run.cycles.length); }} className={`state-cell ${run.final.states.find(s => s.task === t.id)?.phase.toLowerCase()} ${final && t.id === taskId ? 'selected-cell' : ''}`} aria-label={`Task ${t.id} final state`}>{run.final.states.find(s => s.task === t.id)?.phase === 'COMPLETE' ? '✓' : '·'}</button></div></React.Fragment>)}</div></div><div className="timeline-legend">{['PENDING', 'RUNNING', 'PAUSED', 'COMPLETE', 'REJECTED'].map(value => <span key={value}><i className={value.toLowerCase()} />{label(value)}</span>)}<span className="muted">F = fault-triggered cycle</span></div></section>
     <div className="inspect-grid"><section className="decision-panel"><PanelTitle eyebrow="GATE → RANK → COMMIT" title={`Task ${taskId} · candidate inspection`} extra={state && <Badge value={state.phase} />} />

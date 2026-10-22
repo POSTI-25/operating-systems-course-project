@@ -7,13 +7,16 @@ import { executionSegments, progress, ratio, remainingPoints } from '../src/walk
 
 async function generate(page: Page, scenario: string, variant = 'full'): Promise<Run> {
   await page.goto('/');
+  await page.getByRole('button', { name: /Configure/ }).first().click();
   if (scenario !== 'low_soc_eclipse') await page.getByRole('button', { name: new RegExp(scenario) }).click();
   await page.locator(`input[name="variant"][value="${variant}"]`).check();
   const response = page.waitForResponse(response => response.url().endsWith('/api/runs') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Generate reference run' }).click();
+  await page.getByRole('button', { name: 'Evidence & prior views', exact: true }).click();
   const result = await response;
   expect(result.status()).toBe(201);
   await expect(page.getByRole('heading', { name: 'From conditions to execution' })).toBeVisible();
+  await page.getByRole('button', { name: 'Technical view', exact: true }).click();
   return result.json();
 }
 async function capture(request: APIRequestContext, scenario: string, variant = 'full'): Promise<Run> {
@@ -82,6 +85,8 @@ test('competing tasks and fault-triggered cycles have selectable, accurate task 
   await page.getByRole('button', { name: /Configure/ }).first().click();
   await page.getByRole('button', { name: /Compound stress/ }).click();
   await page.getByRole('button', { name: 'Generate reference run' }).click();
+  await page.getByRole('button', { name: 'Evidence & prior views', exact: true }).click();
+  await page.getByRole('button', { name: 'Technical view', exact: true }).click();
   await page.getByRole('button', { name: 'Fault cycle', exact: true }).click();
   await expect(page.locator('.time-readout')).toContainText('3');
   await expect(page.locator('.engine-block')).toContainText('Fault cycle');
@@ -144,9 +149,10 @@ for (const variant of ['full', 'fixed', 'gomx', 'ranjbar']) {
       const errors: string[] = [];
       page.on('pageerror', error => errors.push(error.message));
       const run = await generate(page, titles[scenario.id], variant);
+      await page.getByRole('button', { name: 'Whiteboard lesson', exact: true }).click();
       for (const name of steps) {
         await explanation(page, name);
-        await expect(page.locator('.step-content')).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Scheduling whiteboard' })).toBeVisible();
       }
       expect(errors).toEqual([]);
       for (const task of run.scenario.tasks) {

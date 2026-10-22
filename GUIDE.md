@@ -6,6 +6,8 @@ SAGE-RT is a host-PC demonstration of how a spacecraft can choose work without s
 
 For the browser-based decision inspector, see [the workstation guide](docs/workstation.md). It runs the actual C engine locally and provides reference replay, Gate/Ledger inspection, task-state playback, and the checked-in comparison table.
 
+The browser now opens a compiler-style **Walkthrough**: choose a scenario, click **Run & explore**, then follow the left-hand stage journey. Click **Play** once to continue through all phases automatically, skipping phases without events and stopping at the final result. **Next**, **Back** and the scrubber let you pause and inspect individual artifacts while the scenario source highlights on the right. The lower diagram shows jobs moving through their states and resource reservations changing. Start with **Low-SOC eclipse** for mode selection, then **Competing payloads** for shared CPU and **False-alarm restoration** for pause/resume. Earlier whiteboard and table views remain under **Inspect → Evidence & prior views**.
+
 Use a POSIX environment with a C11 compiler (`gcc` or `clang`), GNU `make`, and standard `diff`, `grep`, and `mktemp` commands. The C engine has no third-party libraries; the optional browser workstation uses Node.js and React. On Windows, use WSL Ubuntu, not native PowerShell, for the C build and command-line demo. From PowerShell, enter WSL:
 
 ```powershell
@@ -125,4 +127,4 @@ npm.cmd start
 npm.cmd start
 
 
-http://127.0.0.1:4317 
+http://127.0.0.1:4317

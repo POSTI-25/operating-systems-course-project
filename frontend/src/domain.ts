@@ -1,4 +1,4 @@
-export type Page = 'configure' | 'inspect' | 'compare';
+export type Page = 'lab' | 'mission' | 'configure' | 'inspect' | 'compare';
 export type Variant = 'full' | 'fixed' | 'gomx' | 'ranjbar';
 export type Phase = 'PENDING' | 'RUNNING' | 'PAUSED' | 'COMPLETE' | 'REJECTED';
 export interface Profile { mode: string; energy: string; thermal: string; fraction: string; cpu: string; memory: string; storage: string; sensor: string; comm: string }

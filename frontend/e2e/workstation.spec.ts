@@ -2,8 +2,10 @@ import { test, expect } from '@playwright/test';
 
 test('real C replay explains low-SOC admission and restoration without fabricated scores', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: /Configure/ }).first().click();
   await expect(page.getByRole('heading', { name: 'Decisions before dispatch.' })).toBeVisible();
   await page.getByRole('button', { name: 'Generate reference run' }).click();
+  await page.getByRole('button', { name: 'Evidence & prior views', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Low-SOC eclipse' })).toBeVisible();
   await expect(page.locator('.candidates-table')).toContainText('soc floor');
   await expect(page.locator('.selected-mode')).toContainText('DEGRADED');
@@ -13,6 +15,7 @@ test('real C replay explains low-SOC admission and restoration without fabricate
   await page.getByRole('button', { name: 'Configure', exact: false }).first().click();
   await page.getByRole('button', { name: /False-alarm restoration/ }).click();
   await page.getByRole('button', { name: 'Generate reference run' }).click();
+  await page.getByRole('button', { name: 'Evidence & prior views', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'False-alarm restoration' })).toBeVisible();
   await page.getByRole('button', { name: 'Predicted risk', exact: true }).click();
   await expect(page.locator('.time-readout')).toContainText('10');
@@ -29,6 +32,7 @@ test('real C replay explains low-SOC admission and restoration without fabricate
 
 test('configuration, policy switching, evidence and mobile layout stay usable', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: /Configure/ }).first().click();
   await page.getByRole('button', { name: /Compound stress/ }).click();
   await page.getByRole('radio', { name: /GomX style/ }).check();
   await expect(page.locator('.policy-description')).toContainText('Regular ticks only');
